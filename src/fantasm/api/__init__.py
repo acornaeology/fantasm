@@ -28,6 +28,15 @@ from .labels import (
     find_containing_sub_for_addr,
     sort_labels,
 )
+from .cfg import build_call_graph, resolve_sub_node
+from .context import compute_call_depths
+from .insert_point import (
+    AlreadyDeclared,
+    InsertPoint,
+    compute_insert_point,
+    find_main_block,
+    parse_subroutine_declarations,
+)
 from .comment_check import (
     ALL_CHECKS,
     CR_ADDRESSES,
