@@ -43,6 +43,20 @@ from .fingerprint import (
     fingerprint_window,
     opcode_fingerprint,
 )
+from .find_shared import (
+    find_matching_spans,
+    is_trivial_span,
+    load_rom,
+    matching_byte_count,
+    parse_rom_spec,
+    sweep_opcodes,
+)
+from .promote import (
+    CALL_MNEMONICS,
+    TERMINAL_MNEMONICS,
+    analyze_labels,
+    load_and_analyze_labels,
+)
 from .compare import (
     Instruction,
     RomHeader,
