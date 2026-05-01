@@ -19,28 +19,43 @@ modules. A handful of modules exist in only one fork.
 
 Line counts and diff-line counts (versus NFS) collected on 2026-05-01.
 
-| Module           | NFS | ADFS | EBR | TUBE | Status                                      | Strategy |
-|------------------|----:|-----:|----:|-----:|---------------------------------------------|----------|
-| `__init__.py`    |   0 |    1 |   1 |    1 | Trivial                                     | New empty in fantasm |
-| `mos6502.py`     | 152 |   97 |  98 |   99 | NFS adds CMOS (65C02) overrides + dispatcher | Take NFS; move `ROM_BASE`/`ROM_SIZE` to project config |
-| `paths.py`       |  28 |   32 |  32 |   36 | Project-specific PREFIX; NFS supports two   | Rewrite against `ProjectContext` + fantasm.toml |
-| `asm_extract.py` | 105 |  100 | 100 |  100 | NFS has 5 extra lines (relocation indexing) | Take NFS |
-| `audit.py`       | 828 |  828 | 828 |  828 | **Byte-identical**                          | Take NFS |
-| `backfill.py`    | 621 |  621 | 621 |  621 | **Byte-identical**                          | Take NFS |
-| `cfg.py`         | 415 |  415 | 415 |  415 | NFS = ADFS = TUBE; EBR has 4 diff lines     | Take NFS |
-| `comment_check.py` | 677 |  677 | 677 |  677 | **Byte-identical**                        | Take NFS |
-| `compare.py`     | 470 |  319 | 319 |  319 | NFS has ~150 extra lines of capability      | Take NFS |
-| `context.py`     | 459 |  459 | 459 |  459 | **Byte-identical**                          | Take NFS |
-| `insert_point.py`| 183 |  183 | 183 |  183 | **Byte-identical**                          | Take NFS |
-| `labels.py`      | 495 |  495 | 495 |  495 | **Byte-identical**                          | Take NFS |
-| `lint.py`        | 555 |  522 | 522 |  492 | NFS most capable; check others for unique rules | Take NFS, then merge any unique rules |
-| `rename_labels.py`| 284 |  284 | 284 |  284 | **Byte-identical**                          | Take NFS |
-| `verify.py`      | 102 |  102 | 102 |  112 | Trivial diffs (project-name strings); TUBE has 24 extra | Take NFS, merge TUBE additions; parameterise project name |
-| `cli.py`         | 417 |  401 | 445 |  358 | All diverge — Click sub-commands             | Design fresh hierarchical CLI in fantasm |
-| `promote.py`     |   – |  235 | 235 |    – | ADFS+EBR identical; not in NFS or TUBE       | Port from ADFS |
-| `find_shared.py` |   – |    – | 254 |    – | EBR only                                     | Port; assess generality |
-| `blockmatch.py`  | 299 |    – |   – |    – | NFS only                                     | Port from NFS |
-| `fingerprint.py` | 112 |    – |   – |    – | NFS only                                     | Port from NFS |
+| Module           | NFS | ADFS | EBR | TUBE | Status                                      | Port |
+|------------------|----:|-----:|----:|-----:|---------------------------------------------|------|
+| `__init__.py`    |   0 |    1 |   1 |    1 | Trivial                                     | ✅ done |
+| `mos6502.py`     | 152 |   97 |  98 |   99 | NFS adds CMOS (65C02) overrides + dispatcher | ✅ done — ROM_BASE/ROM_SIZE moved out, set up for `[rom] cpu` config |
+| `paths.py`       |  28 |   32 |  32 |   36 | Project-specific PREFIX; NFS supports two   | ✅ done — refactored against ProjectContext; `[versions]` config |
+| `asm_extract.py` | 105 |  100 | 100 |  100 | NFS has 5 extra lines (relocation indexing) | ✅ done — typed extract_section() returning AsmSection |
+| `audit.py`       | 828 |  828 | 828 |  828 | **Byte-identical**                          | ⚠️ partial — pure-logic + load_subroutines + find_undeclared_subs ported; `format_*` and top-level `audit()` deferred to CLI integration |
+| `backfill.py`    | 621 |  621 | 621 |  621 | **Byte-identical**                          | ⏳ pending |
+| `cfg.py`         | 415 |  415 | 415 |  415 | NFS = ADFS = TUBE; EBR has 4 diff lines     | ⚠️ partial — build_call_graph + resolve_sub_node ported with KEY FIX (uses audit.build_memory_regions(meta), not hardcoded NFS regions); format_* deferred |
+| `comment_check.py` | 677 |  677 | 677 |  677 | **Byte-identical**                        | ⚠️ partial — every check function + run_checks ported; format_findings + comment_check() deferred |
+| `compare.py`     | 470 |  319 | 319 |  319 | NFS has ~150 extra lines of capability      | ⏳ pending |
+| `context.py`     | 459 |  459 | 459 |  459 | **Byte-identical**                          | ⚠️ partial — compute_call_depths ported; generate_context (file IO) deferred |
+| `insert_point.py`| 183 |  183 | 183 |  183 | **Byte-identical**                          | ⚠️ partial — parse_subroutine_declarations + find_main_block + new compute_insert_point ported; print/IO wrapper deferred |
+| `labels.py`      | 495 |  495 | 495 |  495 | **Byte-identical**                          | ⚠️ partial — classify_labels + sort_labels + collect_auto_labels (was `_collect_auto_labels`); generate_labels file-IO deferred |
+| `lint.py`        | 555 |  522 | 522 |  492 | NFS most capable; check others for unique rules | ⏳ pending |
+| `rename_labels.py`| 284 |  284 | 284 |  284 | **Byte-identical**                          | ⚠️ partial — parse_label_declarations + find_rename_section + find_insert_position + new apply_renames_to_lines pure transformer; rename_labels() and show_sub_labels() file-IO deferred |
+| `verify.py`      | 102 |  102 | 102 |  112 | Trivial diffs (project-name strings); TUBE has 24 extra | ✅ done — verify_round_trip() returns VerifyResult dataclass; BeebasmNotFoundError raised |
+| `cli.py`         | 417 |  401 | 445 |  358 | All diverge — Click sub-commands             | ⏳ pending — designing fresh hierarchical CLI |
+| `promote.py`     |   – |  235 | 235 |    – | ADFS+EBR identical; not in NFS or TUBE       | ⏳ pending |
+| `find_shared.py` |   – |    – | 254 |    – | EBR only                                     | ⏳ pending |
+| `blockmatch.py`  | 299 |    – |   – |    – | NFS only                                     | ⏳ pending |
+| `fingerprint.py` | 112 |    – |   – |    – | NFS only                                     | ⏳ pending |
+
+### Porting strategy that emerged
+
+For each ported module the same shape recurs: lift the pure-logic surface
+into `fantasm.api.<topic>` with type hints, frozen dataclasses for results,
+typed exceptions instead of `sys.exit`/stderr-print, and `warnings.warn`
+for soft diagnostics. Tests are characterisation tests against
+hand-crafted in-memory data — small enough to read, complete enough to
+pin behaviour for refactors.
+
+The `format_*` and file-reading top-level entry functions (the CLI side)
+are intentionally deferred for each module. They will land alongside the
+`fantasm <topic>` Click sub-commands in a follow-up pass, where the
+project-specific strings and `rom_prefix(version_dirpath)` calls can be
+threaded through a `ProjectContext` once.
 
 Legend: NFS = `acorn-nfs`, ADFS = `acorn-adfs`, EBR = `acorn-econet-bridge`,
 TUBE = `acorn-6502-tube-client`. Em-dash (`–`) means the module is absent
