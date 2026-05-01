@@ -61,6 +61,45 @@ bypass the local hook. **Never hand-edit `README.md`** — edit the
 template (or the generator, or the CLI source) and re-run the
 generator.
 
+## Sphinx docs
+
+`docs/` is the published user / API reference, built as a Sphinx
+site and deployed to GitHub Pages on every release tag. The shape
+mirrors `asyoulikeit`:
+
+- `docs/conf.py` — config (autodoc + napoleon + viewcode +
+  intersphinx + sphinx-copybutton + sphinx-click + myst-parser, on
+  the `sphinx-rtd-theme`).
+- `docs/index.rst` — landing page + `toctree` over the rest.
+- `docs/getting_started.rst`, `docs/configuration.rst`,
+  `docs/version_graph.rst`, `docs/workflows.rst` — narrative user
+  guide.
+- `docs/cli.rst` — `sphinx-click` auto-generates the full command
+  surface from `fantasm.cli:main`, including every nested
+  subcommand.
+- `docs/api.rst` — `automodule` per public `fantasm.api.*`
+  submodule.
+- `docs/internals/` — historical material (port inventory,
+  migration-readiness survey) preserved as Markdown via myst-parser
+  and surfaced under a "Project history" toctree.
+
+```bash
+uv sync --group docs                                            # install docs deps
+uv run --group docs sphinx-build -b html docs docs/_build/html  # build
+uv run --group docs sphinx-build -b html -W docs docs/_build/html  # strict (CI)
+```
+
+The reusable workflow `.github/workflows/docs-build.yml` runs the
+strict build on every PR (via `ci.yml`) and again at release time
+(via `release.yml`); release-time also calls
+`upload-pages-artifact` and the parallel `deploy-docs` job ships
+the artifact to GitHub Pages, gated alongside the PyPI publish.
+
+When adding a new `fantasm.api` module: add a section to
+`docs/api.rst` so its docstrings surface. When adding a new CLI
+command: nothing to do — `sphinx-click :nested: full` picks it up
+automatically from the Click tree.
+
 ## External tooling assumed available
 
 - **py8dis** (the disassembler that produces the JSON / ASM /

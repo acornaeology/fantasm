@@ -1,19 +1,33 @@
 name: Release
 
 # Atomic release workflow: on a `v*` tag produced by bump-my-version,
-# runs the full test matrix and the README sync check in parallel as
-# two gates. Only when BOTH gates are green does publish-pypi run.
+# runs the full test matrix, the README sync check, and the strict
+# Sphinx build in parallel as three gates. Only when ALL gates are
+# green do the publication jobs run — and they run in parallel so
+# PyPI and GitHub Pages publish as one unit.
+#
+# A failing test matrix, a stale README, or a documentation build
+# warning all hold back both publications, so every shipped version
+# has green tests, a synced README, a warning-free docs build, a
+# live PyPI package, and matching published docs.
+#
+# Pages uses the artifact produced by docs-build (uploaded via
+# actions/upload-pages-artifact when called with
+# `upload-artifact: true`) and deployed by actions/deploy-pages in
+# deploy-docs. Keep both in this one workflow: the upload and deploy
+# must share a workflow run.
 #
 # `workflow_dispatch` is enabled so a release can be re-attempted
-# manually if the publish step fails transiently after the gates
-# pass. Individual failed jobs can also be re-run from the Actions UI.
+# manually if one of the parallel publications fails transiently
+# after the gates pass. Individual failed jobs can also be re-run
+# from the Actions UI.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
-# Default read-only permissions for the workflow; the publishing job
+# Default read-only permissions for the workflow; each publishing job
 # narrows its own permissions to what it actually needs.
 permissions:
   contents: read
@@ -28,11 +42,18 @@ jobs:
     # Same gate ci.yml runs on every push.
     uses: ./.github/workflows/readme-check.yml
 
+  docs-build:
+    # Same strict-build gate ci.yml runs on every push, with the Pages
+    # artifact upload turned on so deploy-docs has something to ship.
+    uses: ./.github/workflows/docs-build.yml
+    with:
+      upload-artifact: true
+
   publish-pypi:
     name: Publish to PyPI
-    # Both gates must pass before publication. If either fails, this
+    # All three gates must pass before publication. If any fails, this
     # job does not run.
-    needs: [test, readme-check]
+    needs: [test, readme-check, docs-build]
     runs-on: ubuntu-latest
     # The `pypi` GitHub deployment environment is the gate for the
     # PYPI_TOKEN secret (and/or trusted-publishing OIDC config).
@@ -62,3 +83,24 @@ jobs:
         run: uv publish
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  deploy-docs:
+    name: Deploy docs to GitHub Pages
+    needs: [test, readme-check, docs-build]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Allow only one concurrent Pages deployment; don't cancel an
+    # in-flight run because interrupting a deployment can leave Pages
+    # in a stuck "pending" state.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

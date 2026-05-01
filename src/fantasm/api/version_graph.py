@@ -9,7 +9,7 @@ auto-merged).
 See ``docs/configuration.md`` for the full schema. Quick recap of the
 relevant TOML:
 
-.. code-block:: toml
+.. code-block:: text
 
     [memory]
     regions          = [{ start = 0x0016, end = 0x0076 }, ...]

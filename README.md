@@ -8,16 +8,37 @@ Microcomputer family). It brings together capabilities that previously
 lived in per-project forks under the `acornaeology` umbrella, behind a
 single `fantasm` command and a programmatic `fantasm.api` package.
 
-## Status
+## Documentation
 
-Early scaffolding. The CLI shell is in place; the consolidation of
-per-project tools into `fantasm` is in progress.
+Full user guide and CLI / API reference is published at
+**<https://acornaeology.github.io/fantasm/>**.
 
-## Install (development)
+This README covers the absolute basics; for everything else (the
+`fantasm.toml` schema, the version graph, command-by-command
+workflows, the importable `fantasm.api`) follow the docs.
+
+## Install
+
+`fantasm` is on PyPI. Add it to your project as a regular
+dependency:
+
+```toml
+[project]
+dependencies = [
+    "fantasm>=0.4.0",
+]
+```
+
+Or for a one-off install:
 
 ```sh
-uv sync
+pip install fantasm
 ```
+
+The disassembly itself is performed by [py8dis](https://github.com/acornaeology/py8dis)
+through per-version driver scripts; fantasm consumes the artefacts
+those scripts emit (`.asm`, `.json`). Round-trip verification needs
+[beebasm](https://github.com/stardot/beebasm) on `PATH`.
 
 ## CLI
 
@@ -139,24 +160,26 @@ from fantasm.api import ...  # surface filled in as modules are ported
 
 ## Testing
 
-The codebase fantasm consolidates is untested. As modules are ported in,
-fantasm adds **characterisation tests** that pin down observable
-behaviour on representative inputs — these are the safety net for
-merging the four upstream forks. Modules that emit 6502 assembly source
-are exercised with **round-trip tests** that re-assemble the output with
-`beebasm` and compare bytes; the `beebasm_filepath` pytest fixture skips
-such tests when the assembler is not on `PATH`. See `docs/testing.md`
+fantasm pins down observable behaviour with **characterisation
+tests** against hand-crafted JSON / ROM fixtures — the original
+codebase fantasm consolidates had no tests of its own. Modules that
+emit 6502 assembly source are exercised with **round-trip tests**
+that re-assemble the output with `beebasm` and compare bytes; the
+`beebasm_filepath` pytest fixture skips such tests when the
+assembler is not on `PATH`. See [docs/testing.rst](docs/testing.rst)
 for the patterns and `CLAUDE.md` for the project-level guidance.
 
 ## Layout
 
 ```
 src/fantasm/             the package
-src/fantasm/cli.py       Click entrypoint
+src/fantasm/cli/         Click entrypoint, one module per command group
 src/fantasm/api/         programmatic API (re-exports the public surface)
+src/fantasm/cli_helpers.py  shared CLI helpers (AnalysisContext, …)
 src/fantasm/config.py    project-root resolution + fantasm.toml loading
-tests/                   pytest suite (with shared fixtures in conftest.py)
-docs/                    user and developer documentation
+tests/api/               api-side pytest suite
+tests/cli/               cli-side pytest suite
+docs/                    Sphinx site (published to GitHub Pages)
 scripts/                 README generator + Jinja2 template
 ```
 

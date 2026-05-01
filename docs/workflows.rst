@@ -1,0 +1,319 @@
+Workflows
+=========
+
+A grouped tour of fantasm's commands, organised by what you're
+actually trying to do. Each section names the relevant commands,
+shows a typical invocation, and links to the CLI reference and
+configuration schema for the details. See :doc:`cli` for every
+option of every command, and :doc:`configuration` for the
+``fantasm.toml`` knobs the commands read.
+
+
+I want to verify my disassembly is byte-correct
+-----------------------------------------------
+
+After every change to the py8dis driver, the load-bearing question
+is: does the regenerated ``.asm`` reassemble back to the original
+ROM bytes?
+
+.. code-block:: bash
+
+   uv run fantasm disassemble 1.0      # rerun the py8dis driver
+   uv run fantasm verify 1.0           # beebasm round-trip + byte compare
+
+* **Pass** → "Verification PASSED: N bytes match". The disassembly
+  is faithful.
+* **Fail** → "Verification FAILED: rom=Nb assembled=Mb
+  first_diff=&XXXX". Look at the first differing offset; it's almost
+  always either a typo'd ``constant()`` / ``label()``, an instruction
+  that py8dis decoded differently from what's in the bytes (rare; a
+  ``code()`` annotation usually fixes it), or an inline-data block
+  with wrong length.
+
+Sub-banked images — where the ROM file is larger than what the CPU
+sees mapped at runtime — are handled automatically: ``verify``
+slices the trailing portion of the file matching the assembled
+length. The Tube Client's 4 KB / 2 KB shape "just works" without a
+project-side wrapper.
+
+Useful options:
+
+* ``fantasm verify --all`` runs verify across every version under
+  the project's ``versions/`` directory, useful as a CI safety net.
+
+See :doc:`cli` for the full reference, ``fantasm verify`` section.
+
+
+I want to validate annotation addresses
+---------------------------------------
+
+``fantasm lint`` checks every ``comment(0xADDR, ...)``,
+``label(0xADDR, ...)``, and ``subroutine(0xADDR, ...)`` in your driver
+script against the JSON disassembly: does each address actually
+appear in the output?
+
+.. code-block:: bash
+
+   uv run fantasm lint 1.0 versions/myrom-1.0/disassemble/disasm_myrom_10.py
+
+Zero output = clean. Anything reported is an annotation pointing at
+an address fantasm can't account for — typically a stale address
+copied from another version, a typo, or a workspace label that needs
+declaring via ``external_label()`` in the driver (or, falling back,
+in ``fantasm.toml``'s ``[memory]`` regions).
+
+fantasm 0.4.0 reads the JSON's ``external_labels`` and ``sub_labels``
+maps directly, so any address you've named in the driver is accepted
+without needing a duplicate ``[memory]`` declaration.
+
+
+I want to find missing or wrong comments
+----------------------------------------
+
+Two complementary commands.
+
+``fantasm comments check`` runs the comment-vs-code consistency
+checks: detects branch comments that disagree with the actual flag,
+register-load comments that name the wrong value, stale "see also"
+addresses that no longer match an instruction.
+
+.. code-block:: bash
+
+   uv run fantasm comments check 1.0
+   uv run fantasm comments check 1.0 --sub 0x8027    # one subroutine
+
+``fantasm comments suggest`` looks for uncommented instructions and
+proposes paste-ready ``comment()`` lines based on:
+
+* generic 6502 instruction-pattern heuristics ("PHA → Save A on
+  stack", "BNE → Branch if not equal", …);
+* project-specific workspace labels declared in
+  ``[comments.suggest.label_hints]`` (see :doc:`configuration`);
+* any extra label hints passed via ``--label-hint
+  PATTERN=description`` on the command line.
+
+.. code-block:: bash
+
+   uv run fantasm comments suggest 1.0
+   uv run fantasm comments suggest 1.0 --start &8027 --end &805F
+   uv run fantasm comments suggest 1.0 --label-hint "wksp_drive=current drive"
+
+
+I want to understand a subroutine's role
+----------------------------------------
+
+Three views of a subroutine, each pivoting on a different question.
+
+``fantasm audit detail VID NAME``
+  Full report on one routine: title / description from the driver,
+  extent, callers (JSR + JMP entries), branch entries, escaping
+  branches, computed flags. Use it to see whether your annotation
+  matches the actual control flow.
+
+``fantasm cfg sub VID NAME``
+  Flat call-graph view: who calls this routine, who it calls, with
+  the call sites listed. Useful for "is this a leaf?" or "what's the
+  fan-out?".
+
+``fantasm cfg sub-context VID NAME``
+  Calling-convention detail: body lines, every call site with
+  surrounding context, every exit point. Use it when you're trying
+  to figure out the calling convention (which registers carry inputs
+  / outputs).
+
+Combine with the analysis-side commands:
+
+* ``fantasm cfg leaves``, ``fantasm cfg roots``, ``fantasm cfg depth``
+  — call-graph topology.
+* ``fantasm audit summary`` — every subroutine with computed flags
+  (FALL_THROUGH, BRANCH_ESCAPE, NO_REFS, …); use ``--flag X`` to
+  filter.
+* ``fantasm audit undeclared`` — JSR / JMP targets that lack
+  ``subroutine()`` declarations. Run this after large annotation
+  passes.
+
+
+I want to find the gaps in my annotation work
+---------------------------------------------
+
+``fantasm context uncommented`` flags subroutines below a comment
+density threshold. A useful starting point for "what's still
+uncommented?" — sorted by significance, with named callees and
+workspace references shown so you can pick the next routine to tackle.
+
+.. code-block:: bash
+
+   uv run fantasm context uncommented 1.0
+   uv run fantasm context uncommented 1.0 --threshold-pct 50
+
+``fantasm cfg blocks`` identifies basic blocks; pair it with
+``--uncommented-only`` to surface the blocks where every line is
+uncommented (your remaining work front).
+
+.. code-block:: bash
+
+   uv run fantasm cfg blocks 1.0 --uncommented-only --min-items 3
+
+
+I want to bring annotations from a known version to a new one
+-------------------------------------------------------------
+
+The defining workflow when porting annotations across releases.
+
+1. Make sure both versions have ``[[versions.entry]]`` blocks in
+   ``fantasm.toml``, with ``parents`` chained as appropriate.
+2. ``fantasm backfill SOURCE TARGET`` walks the version graph and
+   proposes propagations:
+
+   .. code-block:: bash
+
+      uv run fantasm backfill 3.34 3.65
+
+   The output lists candidate propagations (comments, labels,
+   subroutine declarations) above the configured ``--threshold``
+   that don't conflict with annotations already in the target driver.
+
+3. The output is **report-only** — copy promising rows into the
+   target driver yourself, run ``fantasm disassemble`` and
+   ``fantasm verify`` to confirm nothing broke, and iterate.
+
+Cross-version diff:
+
+.. code-block:: bash
+
+   uv run fantasm annotations diff 3.34 3.65
+
+reports source-side annotations whose mapped target is missing,
+differs, or can't be reached. ``--kind comment|label|subroutine``
+and ``--status differs|missing_in_target|no_mapping`` narrow the
+view.
+
+Both commands rely on the version graph — see :doc:`version_graph`.
+
+
+I want to know which addresses moved between versions
+-----------------------------------------------------
+
+``fantasm addresses map`` exposes the opcode-level address map
+between two versions:
+
+.. code-block:: bash
+
+   # full map (large for real ROMs — pipe through --as tsv)
+   uv run fantasm addresses map 3.34 3.65 --as tsv
+
+   # just specific addresses
+   uv run fantasm addresses map 3.34 3.65 --addr 0x8027 --addr &809E
+
+The map combines an LCS-derived "primary" mapping with a seed-and-
+extend "supplementary" pass that catches reordered blocks the LCS
+misses. Use ``--primary-only`` to see just the LCS mappings.
+
+
+I want to find duplicated code within a ROM
+-------------------------------------------
+
+``fantasm fingerprint`` divides the ROM into fixed-size blocks,
+fingerprints each at the opcode level, and reports any duplicates —
+a quick cross-check for relocated code or unused copies of a routine.
+
+.. code-block:: bash
+
+   uv run fantasm fingerprint 1.0
+   uv run fantasm fingerprint 1.0 --block-size 32
+
+
+I want to find code shared with another ROM
+-------------------------------------------
+
+``fantasm shared`` looks for matching opcode runs between a primary
+ROM and one or more reference ROMs — useful for spotting utility
+routines borrowed from sibling projects (a ROM borrowing from the
+BBC MOS, or NFS sharing routines with ANFS).
+
+.. code-block:: bash
+
+   uv run fantasm shared \
+       "myrom=versions/myrom-1.0/rom/myrom-1.0.rom@&8000" \
+       "nfs=../acorn-nfs/versions/nfs-3.65/rom/nfs-3.65.rom@&8000" \
+       "mos=/path/to/mos.rom@&C000" \
+       --min-len 8
+
+Specs use the form ``[label=]path@load-addr``. ``--min-len`` is the
+minimum match length in instructions; the matcher reports the
+longest matches first.
+
+
+I want to promote auto-generated labels to entry points
+-------------------------------------------------------
+
+py8dis emits anonymous labels like ``c8027`` / ``l8060`` for branch
+targets and JSR targets that don't have a name yet. Turning the
+useful ones into proper ``subroutine()`` or ``entry()`` declarations
+is part of the annotation cycle.
+
+``fantasm promote`` scores each auto-label (call count, after-
+terminator-instruction position, JSR-vs-branch references) and
+ranks them.
+
+.. code-block:: bash
+
+   uv run fantasm promote 1.0
+   uv run fantasm promote 1.0 --not-declared       # only labels not yet declared
+
+``fantasm labels classify`` puts each auto-label in a category
+(``subroutine``, ``shared_tail``, ``data``, ``internal_loop``,
+``internal_conditional``) so you can pick the right py8dis primitive
+to declare it with.
+
+``fantasm labels apply`` applies a TOML rename file to a driver
+script — useful when you want to rename a batch of auto-labels in
+one pass.
+
+
+I want to extract a slice of the assembly listing
+-------------------------------------------------
+
+``fantasm asm extract`` pulls a section of the generated ``.asm``
+file — by address range, by label, or both:
+
+.. code-block:: bash
+
+   uv run fantasm asm extract 1.0 0x8027            # 40 lines from address
+   uv run fantasm asm extract 1.0 0x8027 0x8060     # explicit end address
+   uv run fantasm asm extract 1.0 my_routine        # by label
+   uv run fantasm asm extract 1.0 my_routine my_other_routine
+
+Useful for pasting into bug reports or readouts.
+
+
+I want to add a new subroutine declaration to a driver
+------------------------------------------------------
+
+py8dis driver scripts conventionally keep their ``subroutine()``
+declarations sorted by address. ``fantasm sub insert`` finds the
+right line to add a new one:
+
+.. code-block:: bash
+
+   uv run fantasm sub insert versions/myrom-1.0/disassemble/disasm_myrom_10.py 0x8027
+
+The output names the predecessor and successor subroutines and the
+exact line number where the new declaration should land.
+
+
+Checking the project / CLI
+--------------------------
+
+* ``fantasm info`` — show the resolved project root, ``fantasm.toml``
+  path, and the keys it read.
+* ``fantasm project list`` — list every ROM version registered under
+  ``versions/``.
+* ``fantasm --help`` — top-level group; every sub-command has its
+  own ``--help``.
+* ``fantasm describe-formatter <NAME>`` and ``fantasm
+  list-formatters`` — discover the available output formats (``--as
+  display | tsv | json``); the output formatting is provided by
+  `asyoulikeit`_.
+
+.. _asyoulikeit: https://sixty-north.github.io/asyoulikeit/

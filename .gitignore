@@ -57,3 +57,6 @@ uv.lock
 # Project-local scratch
 scratch/
 tmp/
+
+# Sphinx build output
+docs/_build/

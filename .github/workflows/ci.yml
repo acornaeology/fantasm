@@ -14,3 +14,10 @@ jobs:
     # Belt-and-braces against contributors who bypass the pre-commit
     # hook. Same job is reused by release.yml as a publication gate.
     uses: ./.github/workflows/readme-check.yml
+
+  docs-build:
+    # Validates the Sphinx site builds cleanly (warnings treated as
+    # errors) on every push and PR. Same workflow is reused by
+    # release.yml as a publication gate, with `upload-artifact: true`
+    # so deploy-docs has a Pages artifact to deploy.
+    uses: ./.github/workflows/docs-build.yml

@@ -45,7 +45,7 @@ def context() -> None:
     help=(
         "Substring to match against item labels for the "
         '"workspace_refs" column. Repeatable. Common BBC patterns: '
-        "wksp_, fsm_, zp_, nmi_."
+        "`wksp_`, `fsm_`, `zp_`, `nmi_`."
     ),
 )
 @report_output(reports={"uncommented": "Subroutines with low comment density"})
