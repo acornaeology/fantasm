@@ -72,6 +72,7 @@ from .api.version_graph import (
     load_version_graph,
 )
 from .cli_helpers import (
+    analysis_context,
     effective_regions_for,
     project_cpu,
     project_rom_base,
@@ -313,26 +314,8 @@ def audit() -> None:
 )
 @report_output(reports={"summary": "Subroutine summary"})
 def audit_summary(version_id: str, flag: str | None) -> Reports:
-    import json as _json
-
-    from .api.audit import build_memory_regions
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath} (run disassemble first)"
-        )
-
-    base_regions = effective_regions_for(project_context, version_id)
-    data = _json.loads(files.json_filepath.read_text())
-    memory_regions = build_memory_regions(
-        data["meta"], base_regions=base_regions
-    )
-    subs = load_subroutines(
-        files.json_filepath, memory_regions=memory_regions
-    )
+    actx = analysis_context(click.get_current_context(), version_id)
+    subs = actx.audit_subs
     if flag:
         flag_upper = flag.upper()
         subs = [s for s in subs if flag_upper in s["flags"]]
@@ -375,26 +358,8 @@ def audit_summary(version_id: str, flag: str | None) -> Reports:
     "escaping_branches": "Branches that leave the sub",
 })
 def audit_detail(version_id: str, target: str) -> Reports:
-    import json as _json
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath} (run disassemble first)"
-        )
-
-    base_regions = effective_regions_for(project_context, version_id)
-    data = _json.loads(files.json_filepath.read_text())
-    memory_regions = build_memory_regions(
-        data["meta"], base_regions=base_regions
-    )
-    subs = load_subroutines(
-        files.json_filepath, memory_regions=memory_regions
-    )
-
-    sub = find_sub(subs, target)
+    actx = analysis_context(click.get_current_context(), version_id)
+    sub = find_sub(actx.audit_subs, target)
     if sub is None:
         raise click.UsageError(
             f"subroutine {target!r} not found in {version_id}"
@@ -483,15 +448,10 @@ def audit_detail(version_id: str, target: str) -> Reports:
 @click.argument("version_id")
 @report_output(reports={"undeclared": "Undeclared JSR targets"})
 def audit_undeclared(version_id: str) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath} (run disassemble first)"
-        )
-
-    candidates = find_undeclared_subs(files.json_filepath)
+    actx = analysis_context(click.get_current_context(), version_id)
+    # Trigger the missing-JSON UsageError via the .data property.
+    actx.data
+    candidates = find_undeclared_subs(actx.files.json_filepath)
     table = (
         TableContent(
             title=f"Undeclared JSR targets in {version_id}",
@@ -561,23 +521,15 @@ def comments_suggest(
     end_addr: str | None,
     extra_label_hints: tuple[str, ...],
 ) -> Reports:
-    import json as _json
-
+    from .api.asm_extract import parse_address
     from .api.suggest import suggest_comments
 
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-
-    data = _json.loads(files.json_filepath.read_text())
+    actx = analysis_context(click.get_current_context(), version_id)
+    data = actx.data
 
     # Project-configured label hints.
     suggest_section = (
-        project_context.config.get("comments", {})
+        actx.project.config.get("comments", {})
         .get("suggest", {})
         .get("label_hints", {})
     )
@@ -591,15 +543,11 @@ def comments_suggest(
         pattern, _, description = entry.partition("=")
         label_hints[pattern.strip()] = description.strip()
 
-    # Address range.
     def _parse_hex(text: str) -> int:
-        cleaned = text.strip().lstrip("$&").removeprefix("0x")
-        try:
-            return int(cleaned, 16)
-        except ValueError as exc:
-            raise click.UsageError(
-                f"invalid address {text!r}"
-            ) from exc
+        result = parse_address(text)
+        if result is None:
+            raise click.UsageError(f"invalid address {text!r}")
+        return result
 
     address_range: tuple[int, int] | None = None
     if start_addr or end_addr:
@@ -666,20 +614,11 @@ def comments_suggest(
 )
 @report_output(reports={"findings": "Comment-check findings"})
 def comments_check(version_id: str, sub_target: str | None) -> Reports:
-    import json as _json
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath} (run disassemble first)"
-        )
-
-    data = _json.loads(files.json_filepath.read_text())
-    base_regions = effective_regions_for(project_context, version_id)
+    actx = analysis_context(click.get_current_context(), version_id)
     try:
-        findings = run_checks(data, sub_target=sub_target, regions=base_regions)
+        findings = run_checks(
+            actx.data, sub_target=sub_target, regions=actx.base_regions
+        )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
 
@@ -715,23 +654,8 @@ def cfg() -> None:
 @click.argument("version_id")
 @report_output(reports={"leaves": "Leaf subroutines"})
 def cfg_leaves(version_id: str) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-    base_regions = effective_regions_for(project_context, version_id)
-    if base_regions:
-        import json as _json
-        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
-        memory_regions = build_memory_regions(meta, base_regions=base_regions)
-        graph = build_call_graph(
-            files.json_filepath, memory_regions=memory_regions
-        )
-    else:
-        graph = build_call_graph(files.json_filepath)
+    actx = analysis_context(click.get_current_context(), version_id)
+    graph = actx.call_graph
 
     table = (
         TableContent(
@@ -760,23 +684,8 @@ def cfg_leaves(version_id: str) -> Reports:
 @click.argument("version_id")
 @report_output(reports={"roots": "Root subroutines"})
 def cfg_roots(version_id: str) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-    base_regions = effective_regions_for(project_context, version_id)
-    if base_regions:
-        import json as _json
-        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
-        memory_regions = build_memory_regions(meta, base_regions=base_regions)
-        graph = build_call_graph(
-            files.json_filepath, memory_regions=memory_regions
-        )
-    else:
-        graph = build_call_graph(files.json_filepath)
+    actx = analysis_context(click.get_current_context(), version_id)
+    graph = actx.call_graph
 
     table = (
         TableContent(
@@ -803,24 +712,9 @@ def cfg_roots(version_id: str) -> Reports:
 @click.argument("version_id")
 @report_output(reports={"depth": "Subroutine depth"})
 def cfg_depth(version_id: str) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-    base_regions = effective_regions_for(project_context, version_id)
-    if base_regions:
-        import json as _json
-        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
-        memory_regions = build_memory_regions(meta, base_regions=base_regions)
-        graph = build_call_graph(
-            files.json_filepath, memory_regions=memory_regions
-        )
-    else:
-        graph = build_call_graph(files.json_filepath)
-    depths = compute_call_depths(graph)
+    actx = analysis_context(click.get_current_context(), version_id)
+    depths = compute_call_depths(actx.call_graph)
+    graph = actx.call_graph
 
     sorted_nodes = sorted(depths.items(), key=lambda x: (-x[1], x[0]))
     table = (
@@ -854,23 +748,8 @@ def cfg_depth(version_id: str) -> Reports:
     "callees": "Callees of the subroutine",
 })
 def cfg_sub(version_id: str, target: str) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-    base_regions = effective_regions_for(project_context, version_id)
-    if base_regions:
-        import json as _json
-        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
-        memory_regions = build_memory_regions(meta, base_regions=base_regions)
-        graph = build_call_graph(
-            files.json_filepath, memory_regions=memory_regions
-        )
-    else:
-        graph = build_call_graph(files.json_filepath)
+    actx = analysis_context(click.get_current_context(), version_id)
+    graph = actx.call_graph
     node_id = resolve_sub_node(graph, target)
     if node_id is None:
         raise click.UsageError(
@@ -951,30 +830,13 @@ def cfg_blocks(
     uncommented_only: bool,
     min_items: int,
 ) -> Reports:
-    import json as _json
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-
-    base_regions = effective_regions_for(project_context, version_id)
-    data = _json.loads(files.json_filepath.read_text())
-    memory_regions = build_memory_regions(
-        data["meta"], base_regions=base_regions
-    )
+    actx = analysis_context(click.get_current_context(), version_id)
 
     if sub_target is None:
-        items = data["items"]
+        items = actx.data["items"]
         sub_label = "(all subroutines)"
     else:
-        audit_subs = load_subroutines(
-            files.json_filepath, memory_regions=memory_regions
-        )
-        sub = find_sub(audit_subs, sub_target)
+        sub = find_sub(actx.audit_subs, sub_target)
         if sub is None:
             raise click.UsageError(
                 f"subroutine {sub_target!r} not found in {version_id}"
@@ -1077,44 +939,15 @@ def cfg_sub_context(
     after_context: int,
     exit_context: int,
 ) -> Reports:
-    import json as _json
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-    if not files.asm_filepath.exists():
-        raise click.UsageError(
-            f"ASM not found: {files.asm_filepath}"
-        )
-
-    base_regions = effective_regions_for(project_context, version_id)
-    data = _json.loads(files.json_filepath.read_text())
-    memory_regions = build_memory_regions(
-        data["meta"], base_regions=base_regions
-    )
-    audit_subs = load_subroutines(
-        files.json_filepath, memory_regions=memory_regions
-    )
-    sub = find_sub(audit_subs, target)
+    actx = analysis_context(click.get_current_context(), version_id)
+    sub = find_sub(actx.audit_subs, target)
     if sub is None:
         raise click.UsageError(
             f"subroutine {target!r} not found in {version_id}"
         )
 
-    if base_regions:
-        graph = build_call_graph(
-            files.json_filepath, memory_regions=memory_regions
-        )
-    else:
-        graph = build_call_graph(files.json_filepath)
-
-    asm_lines = files.asm_filepath.read_text().splitlines(keepends=True)
     sub_context = extract_sub_context(
-        sub, asm_lines, graph,
+        sub, actx.asm_lines, actx.call_graph,
         body_window=body_window,
         caller_context=caller_context,
         after_context=after_context,
@@ -1227,17 +1060,10 @@ def asm_extract_cmd(
     end_target: str | None,
     window: int,
 ) -> None:
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.asm_filepath.exists():
-        raise click.UsageError(
-            f"ASM not found: {files.asm_filepath} (run disassemble first)"
-        )
-
-    asm_lines = files.asm_filepath.read_text().splitlines(keepends=True)
+    actx = analysis_context(ctx, version_id)
     try:
         section = extract_section(
-            asm_lines, start_target, end_target, default_window=window
+            actx.asm_lines, start_target, end_target, default_window=window
         )
     except LookupError as exc:
         raise click.UsageError(str(exc)) from exc
@@ -1377,30 +1203,14 @@ def context_uncommented(
     min_items: int,
     label_patterns: tuple[str, ...],
 ) -> Reports:
-    import json as _json
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-
-    base_regions = effective_regions_for(project_context, version_id)
-    data = _json.loads(files.json_filepath.read_text())
-    memory_regions = build_memory_regions(
-        data["meta"], base_regions=base_regions
-    )
-    audit_subs = load_subroutines(
-        files.json_filepath, memory_regions=memory_regions
-    )
+    actx = analysis_context(click.get_current_context(), version_id)
+    audit_subs = actx.audit_subs
 
     # Build address → name lookup from subs + external labels.
     label_to_name: dict[int, str] = {
         sub["addr"]: sub["name"] for sub in audit_subs
     }
-    for label_name, addr in data.get("external_labels", {}).items():
+    for label_name, addr in actx.data.get("external_labels", {}).items():
         label_to_name[addr] = label_name
 
     reports = analyse_uncommented_subs(
@@ -1464,35 +1274,16 @@ def labels() -> None:
 )
 @report_output(reports={"labels": "Auto-label classification"})
 def labels_classify(version_id: str, category: str | None) -> Reports:
-    import json as _json
-
-    from .api.audit import build_memory_regions, load_subroutines
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-
-    data = _json.loads(files.json_filepath.read_text())
-    items = data["items"]
+    actx = analysis_context(click.get_current_context(), version_id)
+    items = actx.data["items"]
     target_refs = build_target_refs(items)
-    base_regions = effective_regions_for(project_context, version_id)
-    memory_regions = build_memory_regions(
-        data.get("meta", {}), base_regions=base_regions
-    )
-    audit_subs = load_subroutines(
-        files.json_filepath, memory_regions=memory_regions
-    )
 
     classified = classify_labels(
         collect_auto_labels(items),
         items,
         target_refs,
-        audit_subs,
-        memory_regions,
+        actx.audit_subs,
+        actx.memory_regions,
     )
     classified = sort_labels(classified)
     if category:
@@ -1649,16 +1440,8 @@ def labels_apply(
 def promote_cmd(
     version_id: str, threshold: int, show_all: bool, not_declared: bool
 ) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-
-    import json as _json
-    candidates = analyze_labels(_json.loads(files.json_filepath.read_text()))
+    actx = analysis_context(click.get_current_context(), version_id)
+    candidates = analyze_labels(actx.data)
     if not show_all:
         candidates = [c for c in candidates if c["score"] >= threshold]
     if not_declared:
@@ -1731,20 +1514,16 @@ def fingerprint_cmd(
     cpu: str | None,
     rom_base: int | None,
 ) -> Reports:
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
+    actx = analysis_context(click.get_current_context(), version_id)
     if cpu is None:
-        cpu = project_cpu(project_context)
+        cpu = project_cpu(actx.project)
     if rom_base is None:
-        rom_base = project_rom_base(project_context)
-    files = resolve_version_files(project_context, version_id)
-    if not files.rom_filepath.exists():
-        raise click.UsageError(
-            f"ROM not found: {files.rom_filepath}"
-        )
+        rom_base = project_rom_base(actx.project)
+    if not actx.files.rom_filepath.exists():
+        raise click.UsageError(f"ROM not found: {actx.files.rom_filepath}")
 
     fps = fingerprint_blocks(
-        files.rom_filepath.read_bytes(),
+        actx.files.rom_filepath.read_bytes(),
         block_size=block_size,
         cpu=cpu,
         rom_base=rom_base,
@@ -1853,19 +1632,8 @@ def sub_insert(driver_filepath: Path, address: str) -> Reports:
 def lint_annotations(
     version_id: str, driver_filepath: Path
 ) -> Reports:
-    import json as _json
-
-    ctx = click.get_current_context()
-    project_context = require_project(ctx)
-    files = resolve_version_files(project_context, version_id)
-    if not files.json_filepath.exists():
-        raise click.UsageError(
-            f"JSON not found: {files.json_filepath}"
-        )
-
-    data = _json.loads(files.json_filepath.read_text())
-    base_regions = effective_regions_for(project_context, version_id)
-    ranges = address_ranges_from_data(data, base_regions=base_regions)
+    actx = analysis_context(click.get_current_context(), version_id)
+    ranges = address_ranges_from_data(actx.data, base_regions=actx.base_regions)
     annotations = extract_annotations(driver_filepath.read_text())
 
     unmapped = [
