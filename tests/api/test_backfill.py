@@ -199,3 +199,199 @@ class TestTranslateSubroutine:
         out = translate_subroutine(text, 0x8000, 0x9000)
         assert out.startswith('subroutine(0x9000,')
         assert 'description="see 0x8000"' in out
+
+
+# --- compose_chained_map -----------------------------------------
+
+
+from fantasm.api.backfill import (
+    PropagationCandidate,
+    PropagationReport,
+    compose_chained_map,
+    propose_propagations,
+)
+from fantasm.api.version_graph import (
+    RelocBlock,
+    Version,
+    VersionGraph,
+)
+
+
+class TestComposeChainedMap:
+    def test_same_version_returns_empty(self) -> None:
+        graph = VersionGraph([Version("a", (), (), None)])
+
+        def loader(_id: str) -> bytes:
+            return b""
+
+        assert compose_chained_map(graph, "a", "a", loader) == {}
+
+    def test_single_hop_identical_roms(self) -> None:
+        # Same opcodes in both versions: every code address maps to
+        # itself with high block_length.
+        rom = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+
+        graph = VersionGraph(
+            [
+                Version("a", (), (), None),
+                Version("b", ("a",), (), None),
+            ]
+        )
+
+        def loader(_id: str) -> bytes:
+            return rom
+
+        composed = compose_chained_map(graph, "a", "b", loader)
+        # The four code instructions land at offsets 0, 2, 3, 5 → addresses
+        # 0x8000, 0x8002, 0x8003, 0x8005 (with default rom_base).
+        assert composed[0x8000] == (0x8000, 4)
+        assert composed[0x8005] == (0x8005, 4)
+
+    def test_backward_walk_inverts(self) -> None:
+        # Walking child -> parent should invert the canonical map.
+        rom_parent = bytes([0xA9, 0x01, 0x60])
+        rom_child = bytes([0xA9, 0x02, 0x60])
+
+        graph = VersionGraph(
+            [
+                Version("parent", (), (), None),
+                Version("child", ("parent",), (), None),
+            ]
+        )
+
+        def loader(version_id: str) -> bytes:
+            return rom_parent if version_id == "parent" else rom_child
+
+        forward = compose_chained_map(graph, "parent", "child", loader)
+        backward = compose_chained_map(graph, "child", "parent", loader)
+        # 0x8000 in either rom maps to 0x8000 in the other.
+        assert forward[0x8000][0] == 0x8000
+        assert backward[0x8000][0] == 0x8000
+
+    def test_two_hop_composition_uses_min_confidence(self) -> None:
+        # Three versions in a row. Build differently-shaped roms so
+        # the per-hop block_lengths differ; the composed confidence
+        # is the minimum.
+        rom_a = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+        rom_b = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+        rom_c = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+
+        graph = VersionGraph(
+            [
+                Version("a", (), (), None),
+                Version("b", ("a",), (), None),
+                Version("c", ("b",), (), None),
+            ]
+        )
+
+        def loader(version_id: str) -> bytes:
+            return {"a": rom_a, "b": rom_b, "c": rom_c}[version_id]
+
+        composed = compose_chained_map(graph, "a", "c", loader)
+        # All three roms identical → identity map across the whole chain.
+        assert composed[0x8000][0] == 0x8000
+
+    def test_disconnected_raises(self) -> None:
+        graph = VersionGraph(
+            [Version("a", (), (), None), Version("b", (), (), None)]
+        )
+
+        def loader(_id: str) -> bytes:
+            return b""
+
+        from fantasm.api.version_graph import NoPathError
+
+        with pytest.raises(NoPathError):
+            compose_chained_map(graph, "a", "b", loader)
+
+
+# --- propose_propagations ----------------------------------------
+
+
+SAMPLE_SOURCE_DRIVER = '''\
+comment(0x8000, "first inline", inline=True)
+label(0x8010, "data_table")
+subroutine(0x8020, "init", hook=None)
+'''
+
+
+class TestProposePropagations:
+    def test_propagates_when_no_target_annotations(self) -> None:
+        # All three source annotations should propagate.
+        confidence_map = {
+            0x8000: (0x9000, 50),
+            0x8010: (0x9010, 50),
+            0x8020: (0x9020, 50),
+        }
+        report = propose_propagations(
+            SAMPLE_SOURCE_DRIVER, "", confidence_map, threshold=5
+        )
+        assert isinstance(report, PropagationReport)
+        kinds = {c.kind for c in report.candidates}
+        assert kinds == {"comment", "label", "subroutine"}
+        assert all(
+            isinstance(c, PropagationCandidate) for c in report.candidates
+        )
+
+    def test_below_threshold_dropped(self) -> None:
+        confidence_map = {
+            0x8000: (0x9000, 1),  # below threshold
+            0x8010: (0x9010, 50),
+            0x8020: (0x9020, 50),
+        }
+        report = propose_propagations(
+            SAMPLE_SOURCE_DRIVER, "", confidence_map, threshold=5
+        )
+        assert report.skipped_below_threshold == 1
+        # Only label + subroutine survive.
+        assert len(report.candidates) == 2
+
+    def test_no_mapping_dropped(self) -> None:
+        # Empty confidence map → all sources have no mapping.
+        report = propose_propagations(
+            SAMPLE_SOURCE_DRIVER, "", {}, threshold=5
+        )
+        assert report.candidates == ()
+        assert report.skipped_no_mapping >= 1
+
+    def test_existing_target_comment_skipped(self) -> None:
+        target = 'comment(0x9000, "first inline", inline=True)\n'
+        confidence_map = {
+            0x8000: (0x9000, 50),
+            0x8010: (0x9010, 50),
+            0x8020: (0x9020, 50),
+        }
+        report = propose_propagations(
+            SAMPLE_SOURCE_DRIVER, target, confidence_map, threshold=5
+        )
+        # Comment skipped (text already present at target addr).
+        kinds = [c.kind for c in report.candidates]
+        assert "comment" not in kinds
+        assert report.skipped_target_has_annotation >= 1
+
+    def test_label_name_conflict_skipped(self) -> None:
+        target = 'label(0x7000, "data_table")\n'  # name reused at different addr
+        confidence_map = {
+            0x8000: (0x9000, 50),
+            0x8010: (0x9010, 50),
+            0x8020: (0x9020, 50),
+        }
+        report = propose_propagations(
+            SAMPLE_SOURCE_DRIVER, target, confidence_map, threshold=5
+        )
+        labels = [c for c in report.candidates if c.kind == "label"]
+        assert labels == []
+        assert report.skipped_label_name_conflict == 1
+
+    def test_subroutine_text_translated(self) -> None:
+        confidence_map = {0x8020: (0x9020, 50)}
+        report = propose_propagations(
+            SAMPLE_SOURCE_DRIVER, "", confidence_map, threshold=5
+        )
+        sub_candidates = [
+            c for c in report.candidates if c.kind == "subroutine"
+        ]
+        assert len(sub_candidates) == 1
+        # Address translated to target.
+        assert "0x9020" in sub_candidates[0].text
+        assert sub_candidates[0].name == "init"

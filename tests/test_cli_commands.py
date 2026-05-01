@@ -354,6 +354,82 @@ class TestCommentsCheck:
         assert result.exit_code == 0, result.output
         assert "8000" in result.output
 
+    def test_backfill_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["backfill", "--help"])
+        assert result.exit_code == 0
+        assert "version graph" in result.output
+
+    def test_backfill_no_versions_configured(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        # No [[versions.entry]] in fantasm.toml.
+        driver_a = tmp_path / "driver_a.py"
+        driver_b = tmp_path / "driver_b.py"
+        driver_a.write_text("")
+        driver_b.write_text("")
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "backfill", "1.0", "2.0",
+                str(driver_a), str(driver_b),
+            ],
+        )
+        assert result.exit_code != 0
+        assert "no [[versions.entry]]" in result.output
+
+    def test_backfill_with_minimal_graph(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+        _add_version(tmp_path, runner, "2.0", "demo")
+
+        # Append a [[versions.entry]] graph to fantasm.toml.
+        toml_filepath = tmp_path / "fantasm.toml"
+        existing = toml_filepath.read_text()
+        toml_filepath.write_text(
+            existing
+            + "\n[[versions.entry]]\nid = \"1.0\"\n"
+            + "\n[[versions.entry]]\nid = \"2.0\"\nparents = [\"1.0\"]\n"
+        )
+
+        # Tiny identical ROMs in both versions.
+        rom = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+        for vid in ("1.0", "2.0"):
+            (tmp_path / "versions" / f"demo-{vid}" / "rom" / f"demo-{vid}.rom").write_bytes(rom)
+
+        # Source driver with one of each annotation kind.
+        source_driver = tmp_path / "src.py"
+        source_driver.write_text(
+            'comment(0x8000, "first inline", inline=True)\n'
+            'label(0x8003, "second_inst")\n'
+            'subroutine(0x8000, "main", hook=None)\n'
+        )
+        # Empty target driver.
+        target_driver = tmp_path / "tgt.py"
+        target_driver.write_text("")
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "backfill", "1.0", "2.0",
+                str(source_driver), str(target_driver),
+                # Tiny ROM → tiny block_lengths; lower the threshold
+                # so the small fixture exercises the propagation.
+                "--threshold", "1",
+                "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # All three propagations should appear (target has none).
+        assert "first inline" in result.output
+        assert "second_inst" in result.output
+        assert "main" in result.output
+
     def test_lint_annotations(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")

@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .blockmatch import disassemble_to_opcodes
+from .version_graph import VersionGraph
 
 
 # Default workspace ranges: zero page only. NFS extended this with
@@ -277,14 +279,269 @@ def translate_subroutine(full_text: str, old_addr: int, new_addr: int) -> str:
     return full_text.replace(f"0x{old_addr:04X}", f"0x{new_addr:04X}", 1)
 
 
+# --- Chain composition over a VersionGraph -----------------------
+
+
+def compose_chained_map(
+    graph: VersionGraph,
+    source_id: str,
+    target_id: str,
+    rom_loader: Callable[[str], bytes],
+    *,
+    rom_base: int = 0x8000,
+    cpu: str = "6502",
+    workspace_ranges: Iterable[tuple[int, int]] = _DEFAULT_WORKSPACE_RANGES,
+    high_confidence: int = 1000,
+) -> dict[int, tuple[int, int]]:
+    """Compose a confidence map from ``source_id`` to ``target_id``.
+
+    Walks the shortest path through ``graph`` between the two
+    versions, builds a per-hop confidence map for each edge using
+    ROM bytes obtained from ``rom_loader``, and composes them
+    end-to-end with min-confidence (weakest link).
+
+    Per-hop maps are always built canonically (parent → child) and
+    inverted on the fly when the path traverses an edge backward,
+    so the chain composition is direction-aware.
+
+    Returns ``{source_addr: (target_addr, confidence)}`` covering
+    addresses where a path exists; addresses that don't compose
+    through every hop are simply absent. Same-version returns ``{}``.
+    """
+    path = graph.find_path(source_id, target_id)
+    if not path:
+        return {}
+
+    composed: dict[int, tuple[int, int]] = {}
+    current_id = source_id
+
+    for edge in path:
+        if edge.walked_forward:
+            assert current_id == edge.parent_id
+            next_id = edge.child_id
+        else:
+            assert current_id == edge.child_id
+            next_id = edge.parent_id
+
+        rom_parent = rom_loader(edge.parent_id)
+        rom_child = rom_loader(edge.child_id)
+        reloc_pairs = graph.reloc_pairs_for_edge(edge)
+        canonical_map = build_confidence_map(
+            rom_parent,
+            rom_child,
+            reloc_pairs,
+            rom_base=rom_base,
+            cpu=cpu,
+            workspace_ranges=workspace_ranges,
+            high_confidence=high_confidence,
+        )
+
+        if edge.walked_forward:
+            hop_map = canonical_map
+        else:
+            inverted: dict[int, tuple[int, int]] = {}
+            for parent_addr, (child_addr, conf) in canonical_map.items():
+                # Multiple parent addrs can map to one child addr; keep
+                # the highest-confidence preimage.
+                existing = inverted.get(child_addr)
+                if existing is None or conf > existing[1]:
+                    inverted[child_addr] = (parent_addr, conf)
+            hop_map = inverted
+
+        if not composed:
+            composed = hop_map
+        else:
+            next_composed: dict[int, tuple[int, int]] = {}
+            for src_addr, (mid_addr, mid_conf) in composed.items():
+                if mid_addr in hop_map:
+                    next_addr, hop_conf = hop_map[mid_addr]
+                    next_composed[src_addr] = (
+                        next_addr,
+                        min(mid_conf, hop_conf),
+                    )
+            composed = next_composed
+
+        current_id = next_id
+
+    return composed
+
+
+# --- Propagation candidate selection -----------------------------
+
+
+@dataclass(frozen=True)
+class PropagationCandidate:
+    """One annotation that backfill proposes to copy from source to target.
+
+    ``confidence`` is the composed block-length from the chain map.
+    ``text`` carries the comment string (for ``kind == "comment"``)
+    or the full ``subroutine()`` source text (for
+    ``kind == "subroutine"``); for labels it's the label name.
+    """
+
+    source_addr: int
+    target_addr: int
+    confidence: int
+    kind: str  # "comment" | "label" | "subroutine"
+    name: str | None
+    text: str
+
+
+@dataclass(frozen=True)
+class PropagationReport:
+    """Result of :func:`propose_propagations` — accepted + skipped tallies."""
+
+    candidates: tuple[PropagationCandidate, ...]
+    skipped_no_mapping: int
+    skipped_below_threshold: int
+    skipped_target_has_annotation: int
+    skipped_label_name_conflict: int
+
+
+def propose_propagations(
+    source_text: str,
+    target_text: str,
+    confidence_map: dict[int, tuple[int, int]],
+    *,
+    threshold: int = 5,
+) -> PropagationReport:
+    """Build the list of annotations worth propagating from source to target.
+
+    For each annotation in ``source_text``:
+
+    - drop it if its address has no mapping in ``confidence_map``
+      (or maps below ``threshold``);
+    - drop it if the target address already carries an annotation of
+      the same kind (deduplication is conservative — exact text match
+      for comments, any-label-at-addr for labels, any-sub-at-addr for
+      subroutines);
+    - drop a label if its name is already used elsewhere in the target
+      driver script.
+
+    The remaining annotations are returned as
+    :class:`PropagationCandidate` records, alongside a tally of
+    skip reasons for the user-facing report.
+    """
+    src_comments, src_labels, _src_label_names, src_subs = parse_annotations(
+        source_text
+    )
+    tgt_comments, tgt_labels, tgt_label_names, tgt_subs = parse_annotations(
+        target_text
+    )
+
+    candidates: list[PropagationCandidate] = []
+    skipped_no_mapping = 0
+    skipped_below_threshold = 0
+    skipped_target_has_annotation = 0
+    skipped_label_name_conflict = 0
+
+    def _resolve(src_addr: int) -> tuple[int, int] | None:
+        nonlocal skipped_no_mapping, skipped_below_threshold
+        mapped = confidence_map.get(src_addr)
+        if mapped is None:
+            skipped_no_mapping += 1
+            return None
+        target_addr, confidence = mapped
+        if confidence < threshold:
+            skipped_below_threshold += 1
+            return None
+        return target_addr, confidence
+
+    # Inline comments.
+    for src_addr, comment_list in src_comments.items():
+        for text, _line in comment_list:
+            mapped = _resolve(src_addr)
+            if mapped is None:
+                continue
+            target_addr, confidence = mapped
+            existing_texts = {t for t, _ in tgt_comments.get(target_addr, [])}
+            if text in existing_texts:
+                skipped_target_has_annotation += 1
+                continue
+            candidates.append(
+                PropagationCandidate(
+                    source_addr=src_addr,
+                    target_addr=target_addr,
+                    confidence=confidence,
+                    kind="comment",
+                    name=None,
+                    text=text,
+                )
+            )
+
+    # Labels.
+    for src_addr, (name, _line) in src_labels.items():
+        mapped = _resolve(src_addr)
+        if mapped is None:
+            continue
+        target_addr, confidence = mapped
+        if target_addr in tgt_labels:
+            skipped_target_has_annotation += 1
+            continue
+        if name in tgt_label_names:
+            skipped_label_name_conflict += 1
+            continue
+        candidates.append(
+            PropagationCandidate(
+                source_addr=src_addr,
+                target_addr=target_addr,
+                confidence=confidence,
+                kind="label",
+                name=name,
+                text=name,
+            )
+        )
+
+    # Subroutines.
+    for src_addr, full_text in src_subs.items():
+        mapped = _resolve(src_addr)
+        if mapped is None:
+            continue
+        target_addr, confidence = mapped
+        if target_addr in tgt_subs:
+            skipped_target_has_annotation += 1
+            continue
+        translated = translate_subroutine(full_text, src_addr, target_addr)
+        match = RE_SUBROUTINE.search(translated)
+        sub_name: str | None = None
+        name_match = re.search(
+            r'subroutine\(0x[0-9A-Fa-f]+,\s*"([^"]+)"', translated
+        )
+        if name_match:
+            sub_name = name_match.group(1)
+        candidates.append(
+            PropagationCandidate(
+                source_addr=src_addr,
+                target_addr=target_addr,
+                confidence=confidence,
+                kind="subroutine",
+                name=sub_name,
+                text=translated,
+            )
+        )
+
+    candidates.sort(key=lambda c: (c.target_addr, c.kind))
+    return PropagationReport(
+        candidates=tuple(candidates),
+        skipped_no_mapping=skipped_no_mapping,
+        skipped_below_threshold=skipped_below_threshold,
+        skipped_target_has_annotation=skipped_target_has_annotation,
+        skipped_label_name_conflict=skipped_label_name_conflict,
+    )
+
+
 __all__ = [
+    "PropagationCandidate",
+    "PropagationReport",
     "RE_INLINE_COMMENT",
     "RE_LABEL",
     "RE_SUBROUTINE",
     "build_confidence_map",
     "build_confidence_map_for_block",
+    "compose_chained_map",
     "group_logical_statements",
     "parse_annotations",
+    "propose_propagations",
     "translate_address_in_text",
     "translate_subroutine",
 ]

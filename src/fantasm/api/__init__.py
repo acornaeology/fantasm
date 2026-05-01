@@ -30,10 +30,14 @@ from .labels import (
 )
 from .cfg import build_call_graph, resolve_sub_node
 from .backfill import (
+    PropagationCandidate,
+    PropagationReport,
     build_confidence_map,
     build_confidence_map_for_block,
+    compose_chained_map,
     group_logical_statements,
     parse_annotations,
+    propose_propagations,
     translate_address_in_text,
     translate_subroutine,
 )

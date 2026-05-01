@@ -38,6 +38,7 @@ Options:
 Commands:
   asm          Assembly-source extraction and inspection.
   audit        Subroutine annotation audit.
+  backfill     Propose annotation propagations from SOURCE_VERSION to...
   cfg          Inter-procedural call-graph queries.
   comments     Comment / annotation consistency checks.
   compare      Compare two ROM versions at byte / opcode / full-instruction...

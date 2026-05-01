@@ -9,6 +9,7 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 
 from . import __version__
 from .api.asm_extract import extract_section
+from .api.backfill import compose_chained_map, propose_propagations
 from .api.audit import (
     ALL_FLAGS,
     end_type,
@@ -53,6 +54,12 @@ from .api.project import (
 from .api.verify import (
     BeebasmNotFoundError,
     verify_round_trip,
+)
+from .api.version_graph import (
+    NoPathError,
+    VersionGraphError,
+    VersionNotInGraphError,
+    load_version_graph,
 )
 from .cli_helpers import require_project, resolve_version_files
 from .config import ProjectContext, resolve_project_context
@@ -1001,6 +1008,151 @@ def lint_annotations(
             line=str(ann["line_number"]),
         )
     return Reports(unmapped=Report(data=table))
+
+
+@main.command(
+    "backfill",
+    help=(
+        "Propose annotation propagations from SOURCE_VERSION to "
+        "TARGET_VERSION via the project's version graph. Walks the "
+        "shortest path between the two versions, builds a per-hop "
+        "opcode-level confidence map, composes them with min-confidence, "
+        "and reports source-driver annotations (comments / labels / "
+        "subroutines) that map to target addresses above THRESHOLD and "
+        "don't conflict with annotations already in the target driver. "
+        "First-pass output is report-only — copy the suggested lines "
+        "into the target driver yourself."
+    ),
+)
+@click.argument("source_version")
+@click.argument("target_version")
+@click.argument(
+    "source_driver",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.argument(
+    "target_driver",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--threshold",
+    type=click.IntRange(1, 1000),
+    default=5,
+    show_default=True,
+    help="Minimum composed block_length to accept a propagation.",
+)
+@click.option(
+    "--cpu",
+    default="6502",
+    show_default=True,
+    help='CPU for opcode lengths: "6502" or "65c02".',
+)
+@click.option(
+    "--rom-base",
+    type=click.IntRange(0, 0xFFFF),
+    default=0x8000,
+    show_default=True,
+    help="ROM load address (used for confidence-map address arithmetic).",
+)
+@report_output(reports={"candidates": "Backfill propagation candidates"})
+def backfill_cmd(
+    source_version: str,
+    target_version: str,
+    source_driver: Path,
+    target_driver: Path,
+    threshold: int,
+    cpu: str,
+    rom_base: int,
+) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+
+    try:
+        graph = load_version_graph(project_context)
+    except VersionGraphError as exc:
+        raise click.UsageError(
+            f"version graph could not be loaded: {exc}"
+        ) from exc
+
+    if len(graph) == 0:
+        raise click.UsageError(
+            "no [[versions.entry]] entries in fantasm.toml; backfill "
+            "needs the version graph to walk between versions"
+        )
+
+    # ROM loader: caches each version's bytes after the first load.
+    rom_cache: dict[str, bytes] = {}
+
+    def loader(version_id: str) -> bytes:
+        if version_id not in rom_cache:
+            files = resolve_version_files(project_context, version_id)
+            if not files.rom_filepath.exists():
+                raise click.UsageError(
+                    f"ROM not found: {files.rom_filepath}"
+                )
+            rom_cache[version_id] = files.rom_filepath.read_bytes()
+        return rom_cache[version_id]
+
+    try:
+        confidence_map = compose_chained_map(
+            graph,
+            source_version,
+            target_version,
+            loader,
+            rom_base=rom_base,
+            cpu=cpu,
+        )
+    except VersionNotInGraphError as exc:
+        raise click.UsageError(
+            f"{exc}; add a [[versions.entry]] block for it"
+        ) from exc
+    except NoPathError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    path = graph.find_path(source_version, target_version)
+    propagation = propose_propagations(
+        source_driver.read_text(),
+        target_driver.read_text(),
+        confidence_map,
+        threshold=threshold,
+    )
+
+    table = (
+        TableContent(
+            title=f"Backfill {source_version} → {target_version}",
+            description=(
+                f"path: {len(path)} hop(s); "
+                f"{len(propagation.candidates)} candidates above threshold "
+                f"{threshold}; "
+                f"skipped: {propagation.skipped_no_mapping} no-mapping, "
+                f"{propagation.skipped_below_threshold} below-threshold, "
+                f"{propagation.skipped_target_has_annotation} target-has-anno, "
+                f"{propagation.skipped_label_name_conflict} label-conflict"
+            ),
+        )
+        .add_column("src", "Source")
+        .add_column("tgt", "Target")
+        .add_column("conf", "Conf")
+        .add_column("kind", "Kind")
+        .add_column("name", "Name")
+        .add_column("text", "Text")
+    )
+    for candidate in propagation.candidates:
+        if candidate.kind == "subroutine":
+            preview = candidate.text.split("\n")[0]
+            if "\n" in candidate.text:
+                preview += " …"
+        else:
+            preview = candidate.text
+        table.add_row(
+            src=f"&{candidate.source_addr:04X}",
+            tgt=f"&{candidate.target_addr:04X}",
+            conf=str(candidate.confidence),
+            kind=candidate.kind,
+            name=candidate.name or "",
+            text=preview,
+        )
+    return Reports(candidates=Report(data=table))
 
 
 @main.group(help="Initialise and manage fantasm projects.")
