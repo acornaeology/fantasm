@@ -29,6 +29,14 @@ from .labels import (
     sort_labels,
 )
 from .cfg import build_call_graph, resolve_sub_node
+from .backfill import (
+    build_confidence_map,
+    build_confidence_map_for_block,
+    group_logical_statements,
+    parse_annotations,
+    translate_address_in_text,
+    translate_subroutine,
+)
 from .blockmatch import (
     RelocatedBlock,
     build_full_address_map,
