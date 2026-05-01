@@ -44,6 +44,7 @@ Commands:
   cfg          Inter-procedural call-graph queries.
   comments     Comment / annotation consistency checks.
   compare      Compare two ROM versions at byte / opcode / full-instruction...
+  context      Code context queries (depth, sub-context, uncommented gaps).
   fingerprint  Fingerprint each block of a ROM version's bytes and report...
   info         Show the resolved project context.
   labels       Auto-generated label classification and renaming.

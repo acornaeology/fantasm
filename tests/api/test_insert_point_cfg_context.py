@@ -19,6 +19,8 @@ from fantasm.api.context import (
     CallSiteContext,
     ExitPointContext,
     SubContext,
+    UncommentedSubReport,
+    analyse_uncommented_subs,
     compute_call_depths,
     extract_sub_context,
 )
@@ -421,3 +423,123 @@ class TestFindBasicBlocks:
 
     def test_empty_input(self) -> None:
         assert find_basic_blocks([]) == []
+
+
+# --- analyse_uncommented_subs -----------------------------------
+
+
+def _make_sub(addr: int, name: str, items: list[dict]) -> dict:
+    """Helper: build an audit-shaped sub dict for testing."""
+    return {
+        "addr": addr,
+        "name": name,
+        "title": f"Sub {name}",
+        "items": items,
+    }
+
+
+class TestAnalyseUncommentedSubs:
+    def test_filters_by_min_items(self) -> None:
+        small_sub = _make_sub(
+            0x8000,
+            "small",
+            [
+                {"addr": 0x8000 + i, "type": "code", "mnemonic": "nop"}
+                for i in range(5)
+            ],
+        )
+        reports = analyse_uncommented_subs(
+            [small_sub], min_items=20
+        )
+        assert reports == []
+
+    def test_filters_by_density(self) -> None:
+        # 25 items, all commented → 100%, should be skipped at 30%
+        # threshold.
+        items = [
+            {
+                "addr": 0x8000 + i,
+                "type": "code",
+                "mnemonic": "nop",
+                "comment_inline": f"comment {i}",
+            }
+            for i in range(25)
+        ]
+        sub = _make_sub(0x8000, "well_documented", items)
+        reports = analyse_uncommented_subs(
+            [sub], density_threshold_pct=30.0, min_items=20
+        )
+        assert reports == []
+
+    def test_reports_low_density_sub(self) -> None:
+        items = [
+            {"addr": 0x8000 + i, "type": "code", "mnemonic": "nop"}
+            for i in range(25)
+        ]
+        sub = _make_sub(0x8000, "uncommented", items)
+        reports = analyse_uncommented_subs(
+            [sub], density_threshold_pct=30.0, min_items=20
+        )
+        assert len(reports) == 1
+        assert reports[0].name == "uncommented"
+        assert reports[0].density_pct == 0.0
+        assert reports[0].callees == ()
+        assert reports[0].workspace_refs == ()
+
+    def test_callees_resolve_via_label_lookup(self) -> None:
+        items = [
+            {"addr": 0x8000 + i, "type": "code", "mnemonic": "nop"}
+            for i in range(20)
+        ]
+        items.append(
+            {
+                "addr": 0x8030,
+                "type": "code",
+                "mnemonic": "jsr",
+                "target": 0x9000,
+            }
+        )
+        sub = _make_sub(0x8000, "uncommented", items)
+        reports = analyse_uncommented_subs(
+            [sub],
+            label_to_name={0x9000: "called_thing"},
+            density_threshold_pct=30.0,
+        )
+        assert reports[0].callees == ("called_thing",)
+
+    def test_workspace_pattern_filtering(self) -> None:
+        items = [
+            {
+                "addr": 0x8000,
+                "type": "code",
+                "mnemonic": "nop",
+                "labels": ["wksp_buffer_index"],
+            },
+            {
+                "addr": 0x8001,
+                "type": "code",
+                "mnemonic": "nop",
+                "labels": ["unrelated_label"],
+            },
+        ] + [
+            {"addr": 0x8002 + i, "type": "code", "mnemonic": "nop"}
+            for i in range(20)
+        ]
+        sub = _make_sub(0x8000, "uncommented", items)
+        reports = analyse_uncommented_subs(
+            [sub],
+            workspace_label_patterns=["wksp_"],
+            density_threshold_pct=30.0,
+        )
+        assert reports[0].workspace_refs == ("wksp_buffer_index",)
+
+    def test_returns_dataclass(self) -> None:
+        items = [
+            {"addr": 0x8000 + i, "type": "code", "mnemonic": "nop"}
+            for i in range(20)
+        ]
+        sub = _make_sub(0x8000, "uncommented", items)
+        reports = analyse_uncommented_subs(
+            [sub], density_threshold_pct=30.0
+        )
+        assert isinstance(reports[0], UncommentedSubReport)

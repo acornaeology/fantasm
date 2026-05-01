@@ -202,10 +202,114 @@ def extract_sub_context(
     )
 
 
+# --- Uncommented-region analysis ---------------------------------
+
+
+@dataclass(frozen=True)
+class UncommentedSubReport:
+    """A subroutine that's a candidate for annotation work.
+
+    Surfaces the subroutine's named callees and any workspace label
+    references found within its extent, so the user can infer the
+    sub's purpose from its relationships with already-understood
+    code.
+    """
+
+    addr: int
+    name: str
+    title: str
+    commented: int
+    total: int
+    density_pct: float
+    callees: tuple[str, ...]
+    workspace_refs: tuple[str, ...]
+
+
+def analyse_uncommented_subs(
+    audit_subs: Sequence[dict],
+    *,
+    label_to_name: dict[int, str] | None = None,
+    workspace_label_patterns: Sequence[str] = (),
+    density_threshold_pct: float = 30.0,
+    min_items: int = 20,
+) -> list[UncommentedSubReport]:
+    """Find subroutines below a comment-density threshold and report context.
+
+    For each subroutine in ``audit_subs`` (typically from
+    :func:`fantasm.api.audit.load_subroutines`) with at least
+    ``min_items`` code items and inline-comment density below
+    ``density_threshold_pct``, returns an
+    :class:`UncommentedSubReport` carrying:
+
+    - the named callees (JSR / JMP targets that resolve via
+      ``label_to_name``);
+    - the workspace label references whose name contains any of the
+      ``workspace_label_patterns`` substrings (typically
+      ``("wksp_", "fsm_", "zp_", ...)`` for BBC-style projects).
+
+    With no ``workspace_label_patterns``, no label filtering is
+    applied and ``workspace_refs`` is empty. ``label_to_name`` maps
+    addresses to their canonical names; pass the union of subroutine
+    names and external-label names for best resolution.
+    """
+    name_lookup = label_to_name or {}
+    patterns = tuple(workspace_label_patterns)
+
+    results: list[UncommentedSubReport] = []
+    for sub in audit_subs:
+        code_items = [
+            item for item in sub.get("items", [])
+            if item.get("type") == "code"
+        ]
+        total = len(code_items)
+        if total < min_items:
+            continue
+        commented = sum(
+            1 for item in code_items if item.get("comment_inline")
+        )
+        density = 100.0 * commented / total if total else 0.0
+        if density >= density_threshold_pct:
+            continue
+
+        callees: set[str] = set()
+        for item in code_items:
+            target = item.get("target")
+            mnemonic = item.get("mnemonic")
+            if (
+                target is not None
+                and mnemonic in ("jsr", "jmp")
+                and target in name_lookup
+            ):
+                callees.add(name_lookup[target])
+
+        workspace_refs: set[str] = set()
+        if patterns:
+            for item in code_items:
+                for label in item.get("labels", []):
+                    if any(pattern in label for pattern in patterns):
+                        workspace_refs.add(label)
+
+        results.append(
+            UncommentedSubReport(
+                addr=sub["addr"],
+                name=sub["name"],
+                title=sub.get("title", ""),
+                commented=commented,
+                total=total,
+                density_pct=density,
+                callees=tuple(sorted(callees)),
+                workspace_refs=tuple(sorted(workspace_refs)),
+            )
+        )
+    return results
+
+
 __all__ = [
     "CallSiteContext",
     "ExitPointContext",
     "SubContext",
+    "UncommentedSubReport",
+    "analyse_uncommented_subs",
     "compute_call_depths",
     "extract_sub_context",
 ]

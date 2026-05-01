@@ -119,6 +119,8 @@ from .context import (
     CallSiteContext,
     ExitPointContext,
     SubContext,
+    UncommentedSubReport,
+    analyse_uncommented_subs,
     compute_call_depths,
     extract_sub_context,
 )
