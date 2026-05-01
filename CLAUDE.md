@@ -1,0 +1,93 @@
+# Fantasm — guidance for AI assistants
+
+Project goal: consolidate 6502 disassembly tooling from four sibling
+acornaeology repositories (`acorn-6502-tube-client`, `acorn-adfs`,
+`acorn-econet-bridge`, `acorn-nfs`) into a single `fantasm` package with a
+Click CLI and a programmatic `fantasm.api` package.
+
+## Layout
+
+- `src/fantasm/` — package
+- `src/fantasm/cli.py` — Click entrypoint, hierarchical sub-command groups
+- `src/fantasm/api/` — programmatic API; flat re-exports from `__init__.py`
+- `src/fantasm/config.py` — project-root resolution and `fantasm.toml` loading
+- `tests/` — pytest suite with shared fixtures in `conftest.py`
+- `docs/` — user/developer docs
+
+## Testing strategy
+
+The original code being consolidated has **no tests**. As code is ported in
+we add tests, but the approach is constrained by the recovery context:
+
+- We cannot TDD pre-existing behaviour. Instead, write **characterisation
+  tests** that pin down current observable behaviour on representative
+  inputs. These are the safety net that lets us merge the four divergent
+  forks and refactor afterwards.
+- Prefer small hand-crafted fixtures (a few bytes, a tiny `.asm` file) over
+  full ROM dumps — fast, reviewable, and easy to reason about.
+- For modules that emit assembly source, write **round-trip tests** that
+  assemble the output with `beebasm` and compare the resulting bytes to the
+  original input.
+
+See `docs/testing.md` for a fuller treatment.
+
+## External tooling assumed available
+
+- **beebasm** (the BBC Micro 6502 cross-assembler) — assumed on `PATH`.
+  Tests obtain its location via the `beebasm_filepath` fixture in
+  `tests/conftest.py` and skip cleanly when it is absent.
+- **uv** for dependency management. Use `uv sync` and `uv run`.
+
+## Project-root resolution
+
+Three-step lookup, highest priority first:
+
+1. `--project-root` on the top-level `fantasm` group
+2. `FANTASM_PROJECT_ROOT` environment variable
+3. Walk upwards from cwd looking for `fantasm.toml`
+
+Commands that need a project root should check `ctx.obj["project"].has_root`
+and fail with a clear message if unresolved.
+
+## Output formatting
+
+Commands that produce structured results use `asyoulikeit.report_output`,
+which gives them a uniform `--as display|tsv|json` story. See
+`src/fantasm/cli.py::info` for the canonical pattern. When a command needs
+the Click context, use `click.get_current_context()` inside the body
+rather than mixing `@click.pass_context` with `@report_output`.
+
+## Versioning and releases
+
+Version is managed via `bump-my-version` (configured in `pyproject.toml`
+under `[tool.bumpversion]`). The single source of truth is `__version__`
+in `src/fantasm/__init__.py`; hatchling reads it dynamically via
+`[tool.hatch.version]` and exposes it as the wheel's installed version.
+Do not edit the version by hand in more than one place — let
+`bump-my-version` update both the module and the
+`[tool.bumpversion] current_version` copy in lock-step.
+
+Release flow (on a clean working tree, from `master`):
+
+```bash
+uv run bump-my-version bump --dry-run --verbose patch   # preview
+uv run bump-my-version bump patch                       # or `minor` / `major`
+git push --follow-tags                                  # publish commit + v<X.Y.Z> tag
+```
+
+Each real bump produces one commit (`Bump version: X.Y.Z → X.Y.Z+1`) and
+one annotated tag (`vX.Y.Z+1`). bump-my-version refuses to run with a
+dirty tree — that is the intended safety net.
+
+A `release.yml` workflow that runs on `v*` tags has not been wired up
+yet (fantasm has no PyPI publication or hosted docs). When it is, model
+on `sixty-north/asyoulikeit/.github/workflows/release.yml`: parallel
+gates (full test matrix + strict docs build), then parallel
+publications (PyPI + GitHub Pages).
+
+## Naming conventions
+
+- Use `_filename`, `_filepath`, `_dirpath`, `_dirname` suffixes; avoid the
+  ambiguous `_dir` / `_file` suffixes.
+- Keep code comments and commit messages free of references to specific AI
+  tools or model providers.
