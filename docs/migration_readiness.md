@@ -118,35 +118,47 @@ that's a generalisation task per script, not a migration blocker.
 
 ## Migration readiness verdict
 
-**Status: blocked by 4 ports + 5 CLI commands** (≈ 850 LOC, plus
-tests and docs).
+**Status: ready** (with one optional refinement deferred). All four
+ports and three of four CLI gaps have landed; the remaining
+`backfill --apply` is a refinement on existing behaviour rather than
+a missing capability.
 
-What "blocked" means in practice: the siblings *could* migrate today
-and drop their `disasm_tools/`, but ADFS specifically loses four
-useful tools (`analyse_uncommented`, `basic_blocks`, `sub_context`,
-`suggest_comments`) until the ports land, and NFS loses its
-cross-version annotation review workflow until the CLI commands
-land. Migration is technically possible but with regression in
-day-to-day capability.
+### Closed
 
-The blocking items split cleanly:
+| Item | Lands as | Status |
+|---|---|---|
+| Cross-reference uncommented gaps with cfg context (`analyse_uncommented.py`) | `fantasm context uncommented` | ✅ done |
+| Basic-block boundaries + coverage stats (`basic_blocks.py`) | `fantasm cfg blocks` | ✅ done |
+| Subroutine calling-convention extraction (`sub_context.py`) | `fantasm cfg sub-context` | ✅ done |
+| Pattern-based comment suggestions (`suggest_comments.py`) | `fantasm comments suggest` | ✅ done |
+| Cross-version annotation diff (`compare_annotations.py`, `compare_334b_vs_334.py`, `compare_label_consistency.py`) | `fantasm annotations diff` | ✅ done |
+| Pairwise address mapping export (`find_label_addresses.py`) | `fantasm addresses map` | ✅ done |
 
-- **(a) New API capabilities**: 4 ports (~600 LOC). Mostly
-  project-agnostic logic that combines existing fantasm primitives in
-  new ways.
-- **(b) CLI integration over existing primitives**: 5 commands
-  (~250 LOC). No new api needed; just new entry points.
+### Deferred (not blocking)
 
-(b) is half a session of work. (a) is a session or two. Neither is
-deep — the patterns are the same as what's already landed.
+| Item | Sibling source | Notes |
+|---|---|---|
+| Driver-script comment-address rewriting | `fix_stale_comments.py` | `fantasm backfill` exists for annotation propagation; rewriting EXISTING annotations to point at corrected addresses is a different shape — closer to "apply an address map to a driver". Worth its own design pass. The underlying primitive (`blockmatch.build_full_address_map`) is already exposed via `fantasm addresses map`, so users can pipe its output into ad-hoc scripts in the meantime. |
 
-Once those land, **all four siblings are migration-ready**: each can
-delete its `src/disasm_tools/` package, declare a `fantasm`
-dependency, run `fantasm project init` at the repo root, and migrate
-its `acorn-{x}-disasm-tool` console-script entry to the unified
-`fantasm` command (or a thin shim if muscle memory matters).
+### What this means for the siblings
 
-The eleven `generate_*.py` driver-translation scripts in NFS and the
-ADFS ld65/Hoglet/JGH ingestion scripts stay in their repos
-indefinitely — they're version-specific orchestration that doesn't
+Each sibling can now:
+
+1. Add `fantasm` as a dependency in its `pyproject.toml`.
+2. Run `fantasm project init --name <project> --prefix <prefix>...`
+   at the repo root to generate its `fantasm.toml`.
+3. Optionally populate `[memory] regions / external_regions`,
+   `[[versions.entry]]` entries (with `parents` and `reloc_blocks`),
+   and per-project label hints in `[comments.suggest.label_hints]`.
+4. Delete `src/disasm_tools/`.
+5. Update the `[project.scripts]` console-script entry from
+   `acorn-{x}-disasm-tool` to either drop it (users invoke `fantasm`
+   directly) or keep a thin shim for muscle memory.
+6. Drop project-specific tools/ scripts whose capability is now in
+   fantasm (the ~7 fantasm-covered scripts from the survey above).
+
+The eleven `generate_*.py` driver-translation scripts in NFS, the
+ADFS ld65/Hoglet/JGH ingestion scripts, the `resolve_unmapped_*.py`
+investigators, and project-specific README generators stay in their
+repos — these are version-specific orchestration that doesn't
 generalise.
