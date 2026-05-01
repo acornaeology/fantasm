@@ -29,6 +29,16 @@ from .labels import (
     sort_labels,
 )
 from .cfg import build_call_graph, resolve_sub_node
+from .compare import (
+    Instruction,
+    RomHeader,
+    compare_headers,
+    compare_roms,
+    disassemble_linear,
+    format_address,
+    format_instruction,
+    parse_rom_header,
+)
 from .rename_labels import (
     apply_renames_to_lines,
     find_insert_position,
