@@ -522,6 +522,136 @@ def comments() -> None:
 
 
 @comments.command(
+    "suggest",
+    help=(
+        "Generate pattern-based comment suggestions for uncommented "
+        "code items. Combines generic 6502 instruction-pattern "
+        "heuristics (PHA → 'Save A on stack', etc.) with "
+        "project-specific workspace label hints from "
+        "[comments.suggest.label_hints] in fantasm.toml. The "
+        "rendered py_line column is paste-ready Python for the "
+        "driver script."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "--start",
+    "start_addr",
+    help="Start address (hex, inclusive). Defaults to ROM start.",
+)
+@click.option(
+    "--end",
+    "end_addr",
+    help="End address (hex, exclusive). Defaults to ROM end.",
+)
+@click.option(
+    "--label-hint",
+    "extra_label_hints",
+    multiple=True,
+    help=(
+        'Add a label hint, format "PATTERN=description" (e.g. '
+        '--label-hint "wksp_drive=current drive"). Merges with hints '
+        "from fantasm.toml. Repeatable."
+    ),
+)
+@report_output(reports={"suggestions": "Comment suggestions"})
+def comments_suggest(
+    version_id: str,
+    start_addr: str | None,
+    end_addr: str | None,
+    extra_label_hints: tuple[str, ...],
+) -> Reports:
+    import json as _json
+
+    from .api.suggest import suggest_comments
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+
+    data = _json.loads(files.json_filepath.read_text())
+
+    # Project-configured label hints.
+    suggest_section = (
+        project_context.config.get("comments", {})
+        .get("suggest", {})
+        .get("label_hints", {})
+    )
+    label_hints: dict[str, str] = dict(suggest_section)
+
+    for entry in extra_label_hints:
+        if "=" not in entry:
+            raise click.UsageError(
+                f"--label-hint must be PATTERN=description, got: {entry!r}"
+            )
+        pattern, _, description = entry.partition("=")
+        label_hints[pattern.strip()] = description.strip()
+
+    # Address range.
+    def _parse_hex(text: str) -> int:
+        cleaned = text.strip().lstrip("$&").removeprefix("0x")
+        try:
+            return int(cleaned, 16)
+        except ValueError as exc:
+            raise click.UsageError(
+                f"invalid address {text!r}"
+            ) from exc
+
+    address_range: tuple[int, int] | None = None
+    if start_addr or end_addr:
+        meta = data.get("meta", {})
+        rom_start = meta.get("load_addr", 0x8000)
+        rom_end = meta.get("end_addr", rom_start + 0x2000)
+        start = _parse_hex(start_addr) if start_addr else rom_start
+        end = _parse_hex(end_addr) if end_addr else rom_end
+        address_range = (start, end)
+
+    declared_subs = {
+        sub["addr"] for sub in data.get("subroutines", [])
+    }
+
+    suggestions = suggest_comments(
+        data["items"],
+        label_hints=label_hints,
+        declared_subs=declared_subs,
+        address_range=address_range,
+    )
+
+    description_parts = [f"{len(suggestions)} suggestions"]
+    if label_hints:
+        description_parts.append(f"{len(label_hints)} label hints active")
+    if address_range:
+        description_parts.append(
+            f"range &{address_range[0]:04X}-&{address_range[1]:04X}"
+        )
+
+    table = (
+        TableContent(
+            title=f"Comment suggestions for {version_id}",
+            description="; ".join(description_parts),
+        )
+        .add_column("addr", "Addr")
+        .add_column("text", "Suggestion")
+        .add_column("py_line", "Driver line")
+    )
+    for suggestion in suggestions:
+        py_line = (
+            f'comment(0x{suggestion.addr:04X}, '
+            f'"{suggestion.text}", inline=True)'
+        )
+        table.add_row(
+            addr=f"&{suggestion.addr:04X}",
+            text=suggestion.text,
+            py_line=py_line,
+        )
+    return Reports(suggestions=Report(data=table))
+
+
+@comments.command(
     "check",
     help=(
         "Run the comment-vs-code consistency checks against the "

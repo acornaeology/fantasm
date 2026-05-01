@@ -203,6 +203,72 @@ class TestCommentsCheck:
         )
         assert result.exit_code == 0, result.output
 
+    def test_comments_suggest(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        json_filepath = version_dirpath / "output" / "demo-1.0.json"
+        json_filepath.parent.mkdir(exist_ok=True)
+        json_filepath.write_text(
+            json.dumps({
+                "meta": {"load_addr": 0x8000, "end_addr": 0x8100},
+                "subroutines": [],
+                "items": [
+                    {"addr": 0x8000, "type": "code", "mnemonic": "pha"},
+                    {"addr": 0x8001, "type": "code", "mnemonic": "tax"},
+                    # Already commented; skipped.
+                    {
+                        "addr": 0x8002,
+                        "type": "code",
+                        "mnemonic": "pla",
+                        "comment_inline": "existing",
+                    },
+                ],
+            })
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "comments", "suggest", "1.0", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Save A on stack" in result.output
+        assert "Transfer A to X" in result.output
+        # The pre-commented item shouldn't appear.
+        assert "existing" not in result.output
+
+    def test_comments_suggest_invalid_label_hint(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        json_filepath = version_dirpath / "output" / "demo-1.0.json"
+        json_filepath.parent.mkdir(exist_ok=True)
+        json_filepath.write_text(
+            json.dumps({
+                "meta": {"load_addr": 0x8000, "end_addr": 0x8100},
+                "subroutines": [],
+                "items": [],
+            })
+        )
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "comments", "suggest", "1.0",
+                "--label-hint", "no-equals-sign",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "PATTERN=description" in result.output
+
     def test_cfg_blocks(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")

@@ -72,6 +72,12 @@ from .find_shared import (
     parse_rom_spec,
     sweep_opcodes,
 )
+from .suggest import (
+    CommentSuggestion,
+    DEFAULT_INSTRUCTION_HINTS,
+    suggest_comments,
+    suggest_for_instruction,
+)
 from .promote import (
     CALL_MNEMONICS,
     TERMINAL_MNEMONICS,
