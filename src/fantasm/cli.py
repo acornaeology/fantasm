@@ -64,6 +64,8 @@ from .api.version_graph import (
 )
 from .cli_helpers import (
     effective_regions_for,
+    project_cpu,
+    project_rom_base,
     require_project,
     resolve_version_files,
 )
@@ -122,13 +124,88 @@ def info() -> Reports:
 @main.command(
     help=(
         "Verify a disassembly round-trips: assemble its .asm with "
-        "beebasm and compare bytes to the original ROM."
+        "beebasm and compare bytes to the original ROM. Pass --all "
+        "to verify every version registered in the project's "
+        "versions/ directory."
     ),
 )
-@click.argument("version_id")
+@click.argument("version_id", required=False)
+@click.option(
+    "--all",
+    "verify_all",
+    is_flag=True,
+    help="Verify every version under the project's versions/ directory.",
+)
 @click.pass_context
-def verify(ctx: click.Context, version_id: str) -> None:
+def verify(
+    ctx: click.Context, version_id: str | None, verify_all: bool
+) -> None:
     project_context = require_project(ctx)
+
+    if verify_all and version_id is not None:
+        raise click.UsageError(
+            "pass either VERSION_ID or --all, not both"
+        )
+    if not verify_all and version_id is None:
+        raise click.UsageError("provide VERSION_ID or --all")
+
+    if verify_all:
+        from .api.paths import (
+            project_rom_prefixes,
+            project_versions_dirpath,
+        )
+        from .api.project import list_versions
+
+        versions_dirpath = project_versions_dirpath(project_context)
+        prefixes = project_rom_prefixes(project_context)
+        if not prefixes:
+            raise click.UsageError(
+                "no [versions] prefixes configured in fantasm.toml"
+            )
+        infos = list_versions(versions_dirpath, prefixes)
+        if not infos:
+            raise click.UsageError(
+                f"no versions found under {versions_dirpath}"
+            )
+
+        passes = 0
+        failures = 0
+        for info in infos:
+            files = resolve_version_files(project_context, info.version_id)
+            if not files.rom_filepath.exists() or not files.asm_filepath.exists():
+                click.echo(
+                    f"{info.version_id}: SKIPPED (missing rom or asm)",
+                    err=True,
+                )
+                failures += 1
+                continue
+            try:
+                result = verify_round_trip(
+                    files.rom_filepath, files.asm_filepath
+                )
+            except BeebasmNotFoundError as exc:
+                raise click.UsageError(str(exc)) from exc
+            if result.matched:
+                click.echo(
+                    f"{info.version_id}: PASSED ({result.rom_size} bytes)"
+                )
+                passes += 1
+            else:
+                if result.first_diff_offset is not None:
+                    detail = f"first_diff=&{result.first_diff_offset:04X}"
+                else:
+                    detail = "(beebasm error)"
+                click.echo(
+                    f"{info.version_id}: FAILED rom={result.rom_size}b "
+                    f"assembled={result.assembled_size}b {detail}",
+                    err=True,
+                )
+                failures += 1
+        click.echo(f"\n{passes} passed, {failures} failed")
+        if failures:
+            ctx.exit(1)
+        return
+
     files = resolve_version_files(project_context, version_id)
     try:
         result = verify_round_trip(files.rom_filepath, files.asm_filepath)
@@ -167,22 +244,28 @@ def verify(ctx: click.Context, version_id: str) -> None:
 @click.argument("version_b")
 @click.option(
     "--cpu",
-    default="6502",
-    show_default=True,
-    help='Default CPU: "6502" or "65c02".',
+    default=None,
+    help='CPU override; defaults to [rom] cpu in fantasm.toml (or "6502").',
 )
 @click.option(
     "--rom-base",
     type=click.IntRange(0, 0xFFFF),
-    default=0x8000,
-    show_default=True,
-    help="ROM load address used for diff-line address formatting.",
+    default=None,
+    help="ROM load address; defaults to [rom] base_address (or 0x8000).",
 )
 @click.pass_context
 def compare(
-    ctx: click.Context, version_a: str, version_b: str, cpu: str, rom_base: int
+    ctx: click.Context,
+    version_a: str,
+    version_b: str,
+    cpu: str | None,
+    rom_base: int | None,
 ) -> None:
     project_context = require_project(ctx)
+    if cpu is None:
+        cpu = project_cpu(project_context)
+    if rom_base is None:
+        rom_base = project_rom_base(project_context)
     files_a = resolve_version_files(project_context, version_a)
     files_b = resolve_version_files(project_context, version_b)
 
@@ -268,6 +351,120 @@ def audit_summary(version_id: str, flag: str | None) -> Reports:
             flags=",".join(sorted(sub["flags"])) if sub["flags"] else "",
         )
     return Reports(summary=Report(data=table))
+
+
+@audit.command(
+    "detail",
+    help="Show the full audit report for one subroutine.",
+)
+@click.argument("version_id")
+@click.argument("target")
+@report_output(reports={
+    "info": "Subroutine summary",
+    "called_by": "Direct callers (JSR/JMP)",
+    "branch_entries": "Branch entries",
+    "escaping_branches": "Branches that leave the sub",
+})
+def audit_detail(version_id: str, target: str) -> Reports:
+    import json as _json
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath} (run disassemble first)"
+        )
+
+    base_regions = effective_regions_for(project_context, version_id)
+    data = _json.loads(files.json_filepath.read_text())
+    memory_regions = build_memory_regions(
+        data["meta"], base_regions=base_regions
+    )
+    subs = load_subroutines(
+        files.json_filepath, memory_regions=memory_regions
+    )
+
+    sub = find_sub(subs, target)
+    if sub is None:
+        raise click.UsageError(
+            f"subroutine {target!r} not found in {version_id}"
+        )
+
+    end_label = end_type(sub)
+    range_str = (
+        f"&{sub['items'][0]['addr']:04X}-&{sub['items'][-1]['addr']:04X}"
+        if sub["items"]
+        else "(empty)"
+    )
+    info = (
+        TableContent(
+            title=f"{sub['name']} (&{sub['addr']:04X})",
+            description=sub["title"] or "(no title)",
+        )
+        .add_column("key", "Key")
+        .add_column("value", "Value")
+        .add_row(key="address", value=f"&{sub['addr']:04X}")
+        .add_row(key="name", value=sub["name"])
+        .add_row(key="title", value=sub["title"] or "")
+        .add_row(key="end_type", value=end_label)
+        .add_row(key="extent", value=range_str)
+        .add_row(
+            key="items",
+            value=f"{sub['code_count']} code / {sub['data_count']} data",
+        )
+        .add_row(
+            key="flags",
+            value=", ".join(sorted(sub["flags"])) if sub["flags"] else "",
+        )
+        .add_row(key="description", value=sub["description"] or "")
+    )
+
+    callers = (
+        TableContent(title=f"Callers of {sub['name']}")
+        .add_column("addr", "Addr")
+        .add_column("mnemonic", "Op")
+        .add_column("in_sub", "In subroutine")
+    )
+    for ref in sorted(sub["entry_refs"], key=lambda r: r["addr"]):
+        callers.add_row(
+            addr=f"&{ref['addr']:04X}",
+            mnemonic=ref["mnemonic"].upper(),
+            in_sub=ref["in_sub"],
+        )
+
+    branches = (
+        TableContent(title=f"Branch entries to {sub['name']}")
+        .add_column("addr", "Addr")
+        .add_column("mnemonic", "Op")
+        .add_column("in_sub", "In subroutine")
+    )
+    for ref in sorted(sub["branch_entry_refs"], key=lambda r: r["addr"]):
+        branches.add_row(
+            addr=f"&{ref['addr']:04X}",
+            mnemonic=ref["mnemonic"].upper(),
+            in_sub=ref["in_sub"],
+        )
+
+    escaping = (
+        TableContent(title=f"Branches escaping {sub['name']}")
+        .add_column("addr", "Addr")
+        .add_column("mnemonic", "Op")
+        .add_column("target", "Target")
+    )
+    for br in sorted(sub["escaping_branches"], key=lambda b: b["addr"]):
+        escaping.add_row(
+            addr=f"&{br['addr']:04X}",
+            mnemonic=br["mnemonic"].upper(),
+            target=f"&{br['target']:04X} {br['target_label']}",
+        )
+
+    return Reports(
+        info=Report(data=info),
+        called_by=Report(data=callers),
+        branch_entries=Report(data=branches),
+        escaping_branches=Report(data=escaping),
+    )
 
 
 @audit.command(
@@ -892,23 +1089,28 @@ def promote_cmd(
 )
 @click.option(
     "--cpu",
-    default="6502",
-    show_default=True,
-    help='CPU for opcode lengths: "6502" or "65c02".',
+    default=None,
+    help='CPU override; defaults to [rom] cpu in fantasm.toml (or "6502").',
 )
 @click.option(
     "--rom-base",
     type=click.IntRange(0, 0xFFFF),
-    default=0x8000,
-    show_default=True,
-    help="ROM load address.",
+    default=None,
+    help="ROM load address; defaults to [rom] base_address (or 0x8000).",
 )
 @report_output(reports={"duplicates": "Duplicate blocks"})
 def fingerprint_cmd(
-    version_id: str, block_size: int, cpu: str, rom_base: int
+    version_id: str,
+    block_size: int,
+    cpu: str | None,
+    rom_base: int | None,
 ) -> Reports:
     ctx = click.get_current_context()
     project_context = require_project(ctx)
+    if cpu is None:
+        cpu = project_cpu(project_context)
+    if rom_base is None:
+        rom_base = project_rom_base(project_context)
     files = resolve_version_files(project_context, version_id)
     if not files.rom_filepath.exists():
         raise click.UsageError(
@@ -1114,16 +1316,14 @@ def lint_annotations(
 )
 @click.option(
     "--cpu",
-    default="6502",
-    show_default=True,
-    help='CPU for opcode lengths: "6502" or "65c02".',
+    default=None,
+    help='CPU override; defaults to [rom] cpu (or "6502").',
 )
 @click.option(
     "--rom-base",
     type=click.IntRange(0, 0xFFFF),
-    default=0x8000,
-    show_default=True,
-    help="ROM load address (used for confidence-map address arithmetic).",
+    default=None,
+    help="ROM load address; defaults to [rom] base_address (or 0x8000).",
 )
 @report_output(reports={"candidates": "Backfill propagation candidates"})
 def backfill_cmd(
@@ -1132,11 +1332,15 @@ def backfill_cmd(
     source_driver: Path | None,
     target_driver: Path | None,
     threshold: int,
-    cpu: str,
-    rom_base: int,
+    cpu: str | None,
+    rom_base: int | None,
 ) -> Reports:
     ctx = click.get_current_context()
     project_context = require_project(ctx)
+    if cpu is None:
+        cpu = project_cpu(project_context)
+    if rom_base is None:
+        rom_base = project_rom_base(project_context)
 
     try:
         graph = load_version_graph(project_context)

@@ -123,6 +123,25 @@ def resolve_version_files(
     )
 
 
+def project_cpu(project_context: ProjectContext) -> str:
+    """Return the project's default CPU from ``[rom] cpu``.
+
+    Falls back to ``"6502"`` when unset or when the project root
+    isn't resolved.
+    """
+    rom_section = project_context.config.get("rom", {})
+    return rom_section.get("cpu", "6502")
+
+
+def project_rom_base(project_context: ProjectContext) -> int:
+    """Return the project's default ROM load address from ``[rom] base_address``.
+
+    Falls back to ``0x8000`` (BBC sideways-ROM convention) when unset.
+    """
+    rom_section = project_context.config.get("rom", {})
+    return rom_section.get("base_address", 0x8000)
+
+
 def effective_regions_for(
     project_context: ProjectContext, version_id: str
 ) -> list[tuple[int, int]]:
@@ -153,6 +172,8 @@ def effective_regions_for(
 __all__ = [
     "VersionFiles",
     "effective_regions_for",
+    "project_cpu",
+    "project_rom_base",
     "require_project",
     "resolve_version_files",
 ]

@@ -432,6 +432,81 @@ class TestCommentsCheck:
         assert "second_inst" in result.output
         assert "main" in result.output
 
+    def test_audit_detail(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        _write_minimal_disasm(version_dirpath, "demo", "1.0")
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "audit", "detail", "1.0", "alpha", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # The "info" report carries the sub's name and address.
+        assert "alpha" in result.output
+        assert "8000" in result.output
+
+    def test_audit_detail_unknown_target(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        _write_minimal_disasm(version_dirpath, "demo", "1.0")
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "audit", "detail", "1.0", "nonexistent",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_verify_all_requires_either_arg_or_flag(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        result = runner.invoke(
+            main,
+            ["--project-root", str(tmp_path), "verify"],
+        )
+        assert result.exit_code != 0
+        assert "VERSION_ID" in result.output or "--all" in result.output
+
+    def test_verify_all_no_versions(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        # No versions added.
+        result = runner.invoke(
+            main,
+            ["--project-root", str(tmp_path), "verify", "--all"],
+        )
+        assert result.exit_code != 0
+        assert "no versions found" in result.output
+
+    def test_verify_all_skips_missing_files(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+        # Don't populate rom or asm — should skip.
+        result = runner.invoke(
+            main,
+            ["--project-root", str(tmp_path), "verify", "--all"],
+        )
+        assert result.exit_code != 0
+        assert "SKIPPED" in result.output
+
     def test_lint_annotations(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")
