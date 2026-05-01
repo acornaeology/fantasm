@@ -27,10 +27,18 @@ class BeebasmNotFoundError(RuntimeError):
 class VerifyResult:
     """Outcome of a round-trip verification.
 
-    ``matched`` is ``True`` when the assembled bytes equal the ROM.
-    On a miss, ``first_diff_offset`` is the byte offset of the first
-    differing byte (or, if one stream is shorter, the length of the
-    shorter stream).
+    ``matched`` is ``True`` when the assembled bytes equal the ROM
+    bytes used for comparison. On a miss, ``first_diff_offset`` is
+    the byte offset of the first differing byte (or, if one stream
+    is shorter, the length of the shorter stream).
+
+    For sub-banked ROM images (where the file is larger than what
+    is mapped at runtime — e.g. the Tube Client's 4 KB image with
+    only the upper 2 KB live at &F800-&FFFF), the comparison runs
+    against the trailing portion of the ROM file matching the
+    assembled output's length. ``rom_size`` is then the file size
+    while ``compared_size`` is the trailing-slice length actually
+    compared. When no slice is needed the two are equal.
 
     ``beebasm_returncode`` and ``beebasm_stderr`` capture the
     assembler's exit info; both are populated even on success.
@@ -39,6 +47,7 @@ class VerifyResult:
     matched: bool
     rom_size: int
     assembled_size: int
+    compared_size: int
     first_diff_offset: int | None
     beebasm_returncode: int
     beebasm_stderr: str
@@ -56,6 +65,13 @@ def verify_round_trip(
     ``PATH``. Raises :class:`BeebasmNotFoundError` if not found,
     ``FileNotFoundError`` for missing inputs, ``RuntimeError`` if
     beebasm failed to produce output.
+
+    When the ROM file is larger than the assembled output (sub-banked
+    ROM images, like the Tube Client's 4 KB file of which only the
+    upper 2 KB is mapped at &F800-&FFFF), the comparison runs against
+    the trailing portion of the file matching the assembled length.
+    The unsliced file size is reported on the result as ``rom_size``
+    and the slice length as ``compared_size``.
     """
     if not Path(rom_filepath).exists():
         raise FileNotFoundError(f"ROM file not found: {rom_filepath}")
@@ -72,6 +88,7 @@ def verify_round_trip(
         beebasm_filepath = found
 
     rom_bytes = Path(rom_filepath).read_bytes()
+    rom_file_size = len(rom_bytes)
 
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
         tmp_filepath = Path(tmp.name)
@@ -90,8 +107,9 @@ def verify_round_trip(
         if result.returncode != 0:
             return VerifyResult(
                 matched=False,
-                rom_size=len(rom_bytes),
+                rom_size=rom_file_size,
                 assembled_size=0,
+                compared_size=rom_file_size,
                 first_diff_offset=None,
                 beebasm_returncode=result.returncode,
                 beebasm_stderr=(result.stderr or "") + (result.stdout or ""),
@@ -106,27 +124,40 @@ def verify_round_trip(
     finally:
         tmp_filepath.unlink(missing_ok=True)
 
-    if rom_bytes == assembled_bytes:
+    # Sub-banked ROMs: when the file is longer than what was
+    # assembled, the leading bytes are unmapped padding — compare
+    # only the trailing portion. Strict size match still applies
+    # when assembled is longer, since extra assembled bytes
+    # genuinely don't fit the ROM.
+    if len(rom_bytes) > len(assembled_bytes):
+        rom_compare_bytes = rom_bytes[-len(assembled_bytes):]
+    else:
+        rom_compare_bytes = rom_bytes
+    compared_size = len(rom_compare_bytes)
+
+    if rom_compare_bytes == assembled_bytes:
         return VerifyResult(
             matched=True,
-            rom_size=len(rom_bytes),
+            rom_size=rom_file_size,
             assembled_size=len(assembled_bytes),
+            compared_size=compared_size,
             first_diff_offset=None,
             beebasm_returncode=0,
             beebasm_stderr=result.stderr or "",
         )
 
-    min_len = min(len(rom_bytes), len(assembled_bytes))
+    min_len = min(len(rom_compare_bytes), len(assembled_bytes))
     first_diff = min_len  # default for length-only differences
     for i in range(min_len):
-        if rom_bytes[i] != assembled_bytes[i]:
+        if rom_compare_bytes[i] != assembled_bytes[i]:
             first_diff = i
             break
 
     return VerifyResult(
         matched=False,
-        rom_size=len(rom_bytes),
+        rom_size=rom_file_size,
         assembled_size=len(assembled_bytes),
+        compared_size=compared_size,
         first_diff_offset=first_diff,
         beebasm_returncode=0,
         beebasm_stderr=result.stderr or "",

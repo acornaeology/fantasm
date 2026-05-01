@@ -69,8 +69,13 @@ def verify(
             except BeebasmNotFoundError as exc:
                 raise click.UsageError(str(exc)) from exc
             if result.matched:
+                slice_note = (
+                    f" sliced from {result.rom_size}b ROM"
+                    if result.compared_size != result.rom_size
+                    else ""
+                )
                 click.echo(
-                    f"{info.version_id}: PASSED ({result.rom_size} bytes)"
+                    f"{info.version_id}: PASSED ({result.compared_size} bytes{slice_note})"
                 )
                 passes += 1
             else:
@@ -78,8 +83,13 @@ def verify(
                     detail = f"first_diff=&{result.first_diff_offset:04X}"
                 else:
                     detail = "(beebasm error)"
+                slice_note = (
+                    f" compared={result.compared_size}b"
+                    if result.compared_size != result.rom_size
+                    else ""
+                )
                 click.echo(
-                    f"{info.version_id}: FAILED rom={result.rom_size}b "
+                    f"{info.version_id}: FAILED rom={result.rom_size}b{slice_note} "
                     f"assembled={result.assembled_size}b {detail}",
                     err=True,
                 )
@@ -98,12 +108,22 @@ def verify(
         raise click.UsageError(str(exc)) from exc
 
     if result.matched:
+        slice_note = (
+            f" (sliced from {result.rom_size}-byte ROM)"
+            if result.compared_size != result.rom_size
+            else ""
+        )
         click.echo(
-            f"Verification PASSED: {result.rom_size} bytes match"
+            f"Verification PASSED: {result.compared_size} bytes match{slice_note}"
         )
         return
+    slice_note = (
+        f" compared={result.compared_size}b"
+        if result.compared_size != result.rom_size
+        else ""
+    )
     click.echo(
-        f"Verification FAILED: rom={result.rom_size}b "
+        f"Verification FAILED: rom={result.rom_size}b{slice_note} "
         f"assembled={result.assembled_size}b "
         + (
             f"first_diff=&{result.first_diff_offset:04X}"

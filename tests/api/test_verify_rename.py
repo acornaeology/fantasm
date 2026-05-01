@@ -173,6 +173,7 @@ class TestVerifyResultDataclass:
             matched=True,
             rom_size=1,
             assembled_size=1,
+            compared_size=1,
             first_diff_offset=None,
             beebasm_returncode=0,
             beebasm_stderr="",
@@ -184,3 +185,109 @@ class TestVerifyResultDataclass:
 # Real round-trip integration tests against beebasm will land once
 # we have ROM fixtures under tests/data/. Production code is exercised
 # by the missing-file/missing-beebasm error paths above.
+
+
+# --- Sub-banked ROM trailing-slice -------------------------------
+
+
+def _fake_beebasm(
+    monkeypatch: pytest.MonkeyPatch, output_bytes: bytes
+) -> None:
+    """Monkeypatch ``subprocess.run`` to mimic a successful beebasm.
+
+    Writes ``output_bytes`` to whichever path follows ``-o`` in the
+    command, then returns a passing CompletedProcess. Used so the
+    slicing tests don't have to spin up a real assembler.
+    """
+    import subprocess as subprocess_module
+
+    def fake_run(cmd, **kwargs):
+        out_path = Path(cmd[cmd.index("-o") + 1])
+        out_path.write_bytes(output_bytes)
+        return subprocess_module.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(
+        "fantasm.api.verify.subprocess.run", fake_run
+    )
+
+
+class TestSubBankedRomSlicing:
+    def test_equal_sizes_no_slice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rom_filepath = tmp_path / "rom.bin"
+        asm_filepath = tmp_path / "out.asm"
+        rom_filepath.write_bytes(b"\x60\x60\x60\x60")
+        asm_filepath.write_text("ORG &8000\n")
+        _fake_beebasm(monkeypatch, b"\x60\x60\x60\x60")
+
+        result = verify_round_trip(
+            rom_filepath, asm_filepath, beebasm_filepath="/bin/true"
+        )
+        assert result.matched is True
+        assert result.rom_size == 4
+        assert result.compared_size == 4
+        assert result.assembled_size == 4
+
+    def test_rom_larger_than_assembled_slices_trailing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROM file is 8 bytes. The leading 4 are unmapped padding
+        # (would make a strict compare fail); the trailing 4 match
+        # what beebasm produces. The Tube Client's 4 KB / 2 KB shape
+        # in miniature.
+        rom_filepath = tmp_path / "rom.bin"
+        asm_filepath = tmp_path / "out.asm"
+        rom_filepath.write_bytes(b"\xFF\xFF\xFF\xFF\x60\x60\x60\x60")
+        asm_filepath.write_text("ORG &8000\n")
+        _fake_beebasm(monkeypatch, b"\x60\x60\x60\x60")
+
+        result = verify_round_trip(
+            rom_filepath, asm_filepath, beebasm_filepath="/bin/true"
+        )
+        assert result.matched is True
+        assert result.rom_size == 8
+        assert result.compared_size == 4
+        assert result.assembled_size == 4
+
+    def test_assembled_larger_than_rom_no_slice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reverse asymmetry: assembled output is bigger than the ROM
+        # file. That's a genuine size mismatch — no slicing rescues
+        # it — so verification fails with first_diff at the ROM end.
+        rom_filepath = tmp_path / "rom.bin"
+        asm_filepath = tmp_path / "out.asm"
+        rom_filepath.write_bytes(b"\x60\x60")
+        asm_filepath.write_text("ORG &8000\n")
+        _fake_beebasm(monkeypatch, b"\x60\x60\x60\x60")
+
+        result = verify_round_trip(
+            rom_filepath, asm_filepath, beebasm_filepath="/bin/true"
+        )
+        assert result.matched is False
+        assert result.rom_size == 2
+        assert result.compared_size == 2
+        assert result.assembled_size == 4
+
+    def test_trailing_slice_mismatch_reports_diff_within_slice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ROM is 8 bytes, trailing 4 differ from assembled at offset 1.
+        # first_diff_offset should be the offset within the slice (1),
+        # not the offset within the original file (5).
+        rom_filepath = tmp_path / "rom.bin"
+        asm_filepath = tmp_path / "out.asm"
+        rom_filepath.write_bytes(b"\xFF\xFF\xFF\xFF\x60\xAA\x60\x60")
+        asm_filepath.write_text("ORG &8000\n")
+        _fake_beebasm(monkeypatch, b"\x60\x60\x60\x60")
+
+        result = verify_round_trip(
+            rom_filepath, asm_filepath, beebasm_filepath="/bin/true"
+        )
+        assert result.matched is False
+        assert result.rom_size == 8
+        assert result.compared_size == 4
+        assert result.first_diff_offset == 1
