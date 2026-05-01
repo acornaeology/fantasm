@@ -507,6 +507,72 @@ class TestCommentsCheck:
         assert result.exit_code != 0
         assert "SKIPPED" in result.output
 
+    def test_addresses_map_full(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+        _add_version(tmp_path, runner, "2.0", "demo")
+
+        # Identical ROMs: every address maps to itself.
+        rom = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+        for vid in ("1.0", "2.0"):
+            (tmp_path / "versions" / f"demo-{vid}" / "rom" / f"demo-{vid}.rom").write_bytes(rom)
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "addresses", "map", "1.0", "2.0", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Each instruction's source address maps to itself.
+        assert "8000" in result.output
+
+    def test_addresses_map_explicit(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+        _add_version(tmp_path, runner, "2.0", "demo")
+
+        rom = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
+        for vid in ("1.0", "2.0"):
+            (tmp_path / "versions" / f"demo-{vid}" / "rom" / f"demo-{vid}.rom").write_bytes(rom)
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "addresses", "map", "1.0", "2.0",
+                "--addr", "0x8000",
+                "--addr", "&8002",
+                "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "8000" in result.output
+        assert "8002" in result.output
+
+    def test_addresses_map_invalid_addr(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+        _add_version(tmp_path, runner, "2.0", "demo")
+        rom = b"\x60"
+        for vid in ("1.0", "2.0"):
+            (tmp_path / "versions" / f"demo-{vid}" / "rom" / f"demo-{vid}.rom").write_bytes(rom)
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "addresses", "map", "1.0", "2.0",
+                "--addr", "not-hex",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "invalid address" in result.output
+
     def test_annotations_diff(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")

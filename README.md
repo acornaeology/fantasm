@@ -36,6 +36,7 @@ Options:
   -h, --help                Show this message and exit.
 
 Commands:
+  addresses    Address translation across ROM versions.
   annotations  Cross-version annotation diff and management.
   asm          Assembly-source extraction and inspection.
   audit        Subroutine annotation audit.
