@@ -29,6 +29,20 @@ from .labels import (
     sort_labels,
 )
 from .cfg import build_call_graph, resolve_sub_node
+from .blockmatch import (
+    RelocatedBlock,
+    build_full_address_map,
+    build_primary_map,
+    disassemble_to_opcodes,
+    find_relocated_blocks,
+)
+from .fingerprint import (
+    find_duplicate_blocks,
+    fingerprint_blocks,
+    fingerprint_rom_file,
+    fingerprint_window,
+    opcode_fingerprint,
+)
 from .compare import (
     Instruction,
     RomHeader,
