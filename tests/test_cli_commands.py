@@ -257,6 +257,128 @@ class TestCommentsCheck:
         assert result.exit_code != 0
         assert "@" in result.output or "load" in result.output.lower()
 
+    def test_labels_classify(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        # Use minimal disasm augmented with an auto label.
+        json_filepath = version_dirpath / "output" / "demo-1.0.json"
+        json_filepath.parent.mkdir(exist_ok=True)
+        json_filepath.write_text(
+            json.dumps({
+                "meta": {"load_addr": 0x8000, "end_addr": 0x8100},
+                "subroutines": [{"addr": 0x8000, "name": "main"}],
+                "items": [
+                    {
+                        "addr": 0x8000,
+                        "type": "code",
+                        "mnemonic": "lda",
+                        "labels": ["main"],
+                    },
+                    {
+                        "addr": 0x8002,
+                        "type": "code",
+                        "mnemonic": "rts",
+                        "labels": ["c8002"],
+                    },
+                ],
+            })
+        )
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "labels", "classify", "1.0", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "c8002" in result.output
+
+    def test_promote(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        _write_minimal_disasm(version_dirpath, "demo", "1.0")
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "promote", "1.0", "--show-all", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_fingerprint(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        rom_filepath = version_dirpath / "rom" / "demo-1.0.rom"
+        rom_filepath.parent.mkdir(exist_ok=True)
+        # 4 blocks of 16 bytes; first two duplicate.
+        rom_filepath.write_bytes((b"\xA9\x00" * 8) * 2 + b"\x60" * 32)
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "fingerprint", "1.0", "--block-size", "16", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_sub_insert(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        driver_filepath = tmp_path / "driver.py"
+        driver_filepath.write_text(
+            "import py8dis\n"
+            "# =================== Subroutines correspondence ===================\n"
+            'subroutine(0x8000, "init")\n'
+            'subroutine(0x8100, "later")\n'
+            "# =================== End ===================\n"
+            "tail()\n"
+        )
+        result = runner.invoke(
+            main,
+            [
+                "sub", "insert", str(driver_filepath), "$8050",
+                "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "8000" in result.output
+
+    def test_lint_annotations(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        _write_minimal_disasm(version_dirpath, "demo", "1.0")
+
+        driver_filepath = tmp_path / "driver.py"
+        driver_filepath.write_text(
+            'comment(0x8001, "in-range")\n'
+            'comment(0x9999, "out-of-range")\n'
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "lint", "1.0", str(driver_filepath), "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # 0x9999 is unmapped (outside the 0x8000-0x80FF ROM range).
+        assert "9999" in result.output
+
     def test_invalid_sub_address(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")

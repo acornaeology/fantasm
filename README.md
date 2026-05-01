@@ -36,15 +36,20 @@ Options:
   -h, --help                Show this message and exit.
 
 Commands:
-  asm       Assembly-source extraction and inspection.
-  audit     Subroutine annotation audit.
-  cfg       Inter-procedural call-graph queries.
-  comments  Comment / annotation consistency checks.
-  compare   Compare two ROM versions at byte / opcode / full-instruction...
-  info      Show the resolved project context.
-  project   Initialise and manage fantasm projects.
-  shared    Find shared 6502 code fragments between a primary ROM and one...
-  verify    Verify a disassembly round-trips: assemble its .asm with...
+  asm          Assembly-source extraction and inspection.
+  audit        Subroutine annotation audit.
+  cfg          Inter-procedural call-graph queries.
+  comments     Comment / annotation consistency checks.
+  compare      Compare two ROM versions at byte / opcode / full-instruction...
+  fingerprint  Fingerprint each block of a ROM version's bytes and report...
+  info         Show the resolved project context.
+  labels       Auto-generated label classification and renaming.
+  lint         Validate that a driver script's annotation addresses...
+  project      Initialise and manage fantasm projects.
+  promote      Score labelled code items as candidates for promotion to...
+  shared       Find shared 6502 code fragments between a primary ROM and...
+  sub          Subroutine workflow helpers.
+  verify       Verify a disassembly round-trips: assemble its .asm with...
 ```
 
 The top-level `fantasm` command accepts a `--project-root` option and

@@ -26,6 +26,23 @@ from .api.find_shared import (
     matching_byte_count,
     parse_rom_spec,
 )
+from .api.fingerprint import (
+    find_duplicate_blocks,
+    fingerprint_blocks,
+)
+from .api.insert_point import AlreadyDeclared, compute_insert_point
+from .api.labels import (
+    build_target_refs,
+    classify_labels,
+    collect_auto_labels,
+    sort_labels,
+)
+from .api.lint import (
+    address_in_ranges,
+    address_ranges_from_data,
+    extract_annotations,
+)
+from .api.promote import analyze_labels
 from .api.paths import project_rom_prefixes, project_versions_dirpath
 from .api.project import (
     ProjectInitConfig,
@@ -635,6 +652,355 @@ def shared(
             )
 
     return Reports(matches=Report(data=table))
+
+
+@main.group(help="Auto-generated label classification and renaming.")
+def labels() -> None:
+    pass
+
+
+@labels.command(
+    "classify",
+    help=(
+        "Classify auto-generated labels (c#### / l#### / loop_c#### / "
+        "sub_c####) into categories: subroutine, shared_tail, data, "
+        "internal_loop, internal_conditional."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "--category",
+    type=click.Choice(
+        ["subroutine", "shared_tail", "data", "internal_loop", "internal_conditional"],
+        case_sensitive=False,
+    ),
+    help="Restrict to one category.",
+)
+@report_output(reports={"labels": "Auto-label classification"})
+def labels_classify(version_id: str, category: str | None) -> Reports:
+    import json as _json
+
+    from .api.audit import build_memory_regions, load_subroutines
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+
+    data = _json.loads(files.json_filepath.read_text())
+    items = data["items"]
+    target_refs = build_target_refs(items)
+    audit_subs = load_subroutines(files.json_filepath)
+    memory_regions = build_memory_regions(data.get("meta", {}))
+
+    classified = classify_labels(
+        collect_auto_labels(items),
+        items,
+        target_refs,
+        audit_subs,
+        memory_regions,
+    )
+    classified = sort_labels(classified)
+    if category:
+        classified = [c for c in classified if c["category"] == category]
+
+    table = (
+        TableContent(
+            title=f"Auto-labels in {version_id}",
+            description=f"{len(classified)} labels"
+            + (f" in category {category}" if category else ""),
+        )
+        .add_column("name", "Name")
+        .add_column("addr", "Addr")
+        .add_column("category", "Category")
+        .add_column("refs", "Refs")
+        .add_column("xref", "X-sub")
+        .add_column("parent", "Parent")
+    )
+    for record in classified:
+        table.add_row(
+            name=record["name"],
+            addr=f"&{record['addr']:04X}",
+            category=record["category"],
+            refs=str(len(record["inbound_refs"])),
+            xref=str(record["cross_sub_count"]),
+            parent=record["parent_sub_name"] or "",
+        )
+    return Reports(labels=Report(data=table))
+
+
+@main.command(
+    "promote",
+    help=(
+        "Score labelled code items as candidates for promotion to "
+        "entry()/subroutine() declarations."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "--threshold",
+    type=click.IntRange(0, 100),
+    default=25,
+    show_default=True,
+    help="Hide candidates below this score.",
+)
+@click.option(
+    "--show-all",
+    is_flag=True,
+    help="Show every candidate regardless of score.",
+)
+@click.option(
+    "--not-declared",
+    is_flag=True,
+    help="Hide labels already declared as entry/subroutine.",
+)
+@report_output(reports={"candidates": "Promotion candidates"})
+def promote_cmd(
+    version_id: str, threshold: int, show_all: bool, not_declared: bool
+) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+
+    import json as _json
+    candidates = analyze_labels(_json.loads(files.json_filepath.read_text()))
+    if not show_all:
+        candidates = [c for c in candidates if c["score"] >= threshold]
+    if not_declared:
+        candidates = [
+            c for c in candidates
+            if not c["is_entry"] and not c["is_subroutine"]
+        ]
+
+    table = (
+        TableContent(
+            title=f"Promotion candidates for {version_id}",
+            description=(
+                f"{len(candidates)} candidates"
+                + ("" if show_all else f", score ≥ {threshold}")
+            ),
+        )
+        .add_column("addr", "Addr")
+        .add_column("score", "Score")
+        .add_column("name", "Name")
+        .add_column("refs", "Refs")
+        .add_column("jsr", "JSR")
+        .add_column("after_term", "AfterTerm")
+        .add_column("entry", "Entry")
+        .add_column("sub", "Sub")
+    )
+    for c in candidates:
+        table.add_row(
+            addr=f"&{c['addr']:04X}",
+            score=f"{c['score']:.0f}",
+            name=c["name"],
+            refs=str(c["total_refs"]),
+            jsr=str(c["jsr_refs"]),
+            after_term="Y" if c["after_terminal"] else "",
+            entry="Y" if c["is_entry"] else "",
+            sub="Y" if c["is_subroutine"] else "",
+        )
+    return Reports(candidates=Report(data=table))
+
+
+@main.command(
+    "fingerprint",
+    help=(
+        "Fingerprint each block of a ROM version's bytes and report any "
+        "duplicate blocks (a quick cross-check for relocated code)."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "--block-size",
+    type=click.IntRange(1, 4096),
+    default=64,
+    show_default=True,
+    help="Block size in bytes.",
+)
+@click.option(
+    "--cpu",
+    default="6502",
+    show_default=True,
+    help='CPU for opcode lengths: "6502" or "65c02".',
+)
+@click.option(
+    "--rom-base",
+    type=click.IntRange(0, 0xFFFF),
+    default=0x8000,
+    show_default=True,
+    help="ROM load address.",
+)
+@report_output(reports={"duplicates": "Duplicate blocks"})
+def fingerprint_cmd(
+    version_id: str, block_size: int, cpu: str, rom_base: int
+) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.rom_filepath.exists():
+        raise click.UsageError(
+            f"ROM not found: {files.rom_filepath}"
+        )
+
+    fps = fingerprint_blocks(
+        files.rom_filepath.read_bytes(),
+        block_size=block_size,
+        cpu=cpu,
+        rom_base=rom_base,
+    )
+    duplicates = find_duplicate_blocks(fps)
+
+    table = (
+        TableContent(
+            title=f"Duplicate blocks in {version_id}",
+            description=(
+                f"{len(duplicates)} duplicate fingerprints "
+                f"out of {len(fps)} blocks"
+            ),
+        )
+        .add_column("fingerprint", "Fingerprint")
+        .add_column("count", "Count")
+        .add_column("addresses", "Addresses")
+    )
+    for fp, addrs in sorted(duplicates.items(), key=lambda x: -len(x[1])):
+        table.add_row(
+            fingerprint=fp,
+            count=str(len(addrs)),
+            addresses=", ".join(f"&{a:04X}" for a in addrs),
+        )
+    return Reports(duplicates=Report(data=table))
+
+
+@main.group(help="Subroutine workflow helpers.")
+def sub() -> None:
+    pass
+
+
+@sub.command(
+    "insert",
+    help=(
+        "Find where a new subroutine() declaration for ADDRESS belongs "
+        "in the given driver script (address-sorted insertion)."
+    ),
+)
+@click.argument("driver_filepath", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("address")
+@report_output(reports={"insert": "Insertion point"})
+def sub_insert(driver_filepath: Path, address: str) -> Reports:
+    cleaned = address.strip().lstrip("$&").removeprefix("0x")
+    try:
+        target_addr = int(cleaned, 16)
+    except ValueError as exc:
+        raise click.UsageError(f"invalid address {address!r}") from exc
+
+    lines = driver_filepath.read_text().splitlines()
+    try:
+        ip = compute_insert_point(lines, target_addr)
+    except AlreadyDeclared as exc:
+        raise click.UsageError(str(exc)) from exc
+    except LookupError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    table = (
+        TableContent(
+            title=f"Insertion point for &{target_addr:04X}",
+            description=str(driver_filepath),
+        )
+        .add_column("key", "Key")
+        .add_column("value", "Value")
+        .add_row(key="insert_line", value=str(ip.insert_line + 1))
+        .add_row(
+            key="predecessor",
+            value=(
+                f"&{ip.predecessor['addr']:04X} {ip.predecessor['name'] or ''} "
+                f"(line {ip.predecessor['start_line'] + 1})"
+                if ip.predecessor
+                else "(start of block)"
+            ),
+        )
+        .add_row(
+            key="successor",
+            value=(
+                f"&{ip.successor['addr']:04X} {ip.successor['name'] or ''} "
+                f"(line {ip.successor['start_line'] + 1})"
+                if ip.successor
+                else "(end of block)"
+            ),
+        )
+        .add_row(
+            key="block",
+            value=f"lines {ip.block_start_line + 1}-{ip.block_end_line + 1}",
+        )
+    )
+    return Reports(insert=Report(data=table))
+
+
+@main.command(
+    "lint",
+    help=(
+        "Validate that a driver script's annotation addresses "
+        "(comment / subroutine / label) all map to addresses present "
+        "in the version's disassembly output."
+    ),
+)
+@click.argument("version_id")
+@click.argument(
+    "driver_filepath",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@report_output(reports={"unmapped": "Annotations whose addresses are not in the disassembly"})
+def lint_annotations(
+    version_id: str, driver_filepath: Path
+) -> Reports:
+    import json as _json
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+
+    data = _json.loads(files.json_filepath.read_text())
+    ranges = address_ranges_from_data(data)
+    annotations = extract_annotations(driver_filepath.read_text())
+
+    unmapped = [
+        a for a in annotations
+        if a.get("detail") != "metadata_only"
+        and not address_in_ranges(a["address"], ranges)
+    ]
+
+    table = (
+        TableContent(
+            title=f"Lint findings for {version_id}",
+            description=(
+                f"{len(unmapped)} unmapped annotations "
+                f"of {len(annotations)} total"
+            ),
+        )
+        .add_column("addr", "Addr")
+        .add_column("kind", "Kind")
+        .add_column("name", "Name")
+        .add_column("line", "Line")
+    )
+    for ann in sorted(unmapped, key=lambda a: (a["address"], a["line_number"])):
+        table.add_row(
+            addr=f"&{ann['address']:04X}",
+            kind=ann["kind"],
+            name=ann.get("name") or "",
+            line=str(ann["line_number"]),
+        )
+    return Reports(unmapped=Report(data=table))
 
 
 @main.group(help="Initialise and manage fantasm projects.")
