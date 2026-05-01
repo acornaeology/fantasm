@@ -12,6 +12,13 @@ The flat re-exports are populated as topics are ported in from the sibling
 
 from __future__ import annotations
 
+from .asm_extract import (
+    AsmSection,
+    build_index,
+    extract_section,
+    find_line_for_target,
+    parse_address,
+)
 from .mos6502 import (
     OPCODE_LENGTHS,
     OPCODE_LENGTHS_65C02,
@@ -32,14 +39,19 @@ from .paths import (
 )
 
 __all__ = [
+    "AsmSection",
     "OPCODE_LENGTHS",
     "OPCODE_LENGTHS_65C02",
     "OPCODE_MNEMONICS",
     "OPCODE_MNEMONICS_65C02",
     "VersionNotFoundError",
+    "build_index",
+    "extract_section",
+    "find_line_for_target",
     "instruction_length",
     "mnemonic",
     "opcode_tables",
+    "parse_address",
     "project_rom_prefixes",
     "project_versions_dirpath",
     "resolve_version_dirpath",
