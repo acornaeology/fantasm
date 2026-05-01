@@ -203,6 +203,41 @@ class TestCommentsCheck:
         )
         assert result.exit_code == 0, result.output
 
+    def test_cfg_sub_context(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        json_filepath = version_dirpath / "output" / "demo-1.0.json"
+        json_filepath.parent.mkdir(exist_ok=True)
+        json_filepath.write_text(
+            json.dumps({
+                "meta": {"load_addr": 0x8000, "end_addr": 0x8100},
+                "subroutines": [{"addr": 0x8000, "name": "main"}],
+                "items": [
+                    {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+                    {"addr": 0x8002, "type": "code", "mnemonic": "rts"},
+                ],
+            })
+        )
+        asm_filepath = version_dirpath / "output" / "demo-1.0.asm"
+        asm_filepath.write_text(
+            ".main\n"
+            "    LDA #$00       ;8000:\n"
+            "    RTS            ;8002:\n"
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "cfg", "sub-context", "1.0", "main", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "main" in result.output
+
     def test_cfg_depth(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")
