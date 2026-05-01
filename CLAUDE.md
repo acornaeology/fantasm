@@ -109,11 +109,16 @@ Each real bump produces one commit (`Bump version: X.Y.Z → X.Y.Z+1`) and
 one annotated tag (`vX.Y.Z+1`). bump-my-version refuses to run with a
 dirty tree — that is the intended safety net.
 
-A `release.yml` workflow that runs on `v*` tags has not been wired up
-yet (fantasm has no PyPI publication or hosted docs). When it is, model
-on `sixty-north/asyoulikeit/.github/workflows/release.yml`: parallel
-gates (full test matrix + strict docs build), then parallel
-publications (PyPI + GitHub Pages).
+A `release.yml` workflow triggers on `v*` tags (the ones
+`bump-my-version` produces) plus manual `workflow_dispatch`. Two
+parallel gates — the full test matrix from `test.yml` and the
+README-sync check from `readme-check.yml` — feed a single
+`publish-pypi` job. Nothing is published unless **both** gates are
+green. PyPI publication uses `uv publish` with `UV_PUBLISH_TOKEN`
+from the `PYPI_TOKEN` repo secret, scoped to the `pypi` GitHub
+deployment environment. To release: bump the version, push the
+`v<X.Y.Z>` tag, watch the Actions UI. A failed publish can be
+re-attempted via the **Run workflow** button.
 
 ## Naming conventions
 
