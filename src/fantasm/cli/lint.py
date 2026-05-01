@@ -9,8 +9,8 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.lint import (
     address_in_ranges,
-    address_ranges_from_data,
     extract_annotations,
+    valid_addresses_from_data,
 )
 from ..cli_helpers import analysis_context
 
@@ -20,7 +20,8 @@ from ..cli_helpers import analysis_context
     help=(
         "Validate that a driver script's annotation addresses "
         "(comment / subroutine / label) all map to addresses present "
-        "in the version's disassembly output."
+        "in the version's disassembly output, the version's declared "
+        "workspace regions, or its external_labels."
     ),
 )
 @click.argument("version_id")
@@ -33,13 +34,18 @@ def lint_annotations(
     version_id: str, driver_filepath: Path
 ) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
-    ranges = address_ranges_from_data(actx.data, base_regions=actx.base_regions)
+    # Per-address valid set: items, sub_labels, external_labels,
+    # subroutines, and the full ROM range. The set covers anything
+    # py8dis emitted into the JSON. Workspace regions outside that
+    # set still come from the version graph (effective_regions).
+    valid_addresses = valid_addresses_from_data(actx.data)
     annotations = extract_annotations(driver_filepath.read_text())
 
     unmapped = [
         a for a in annotations
         if a.get("detail") != "metadata_only"
-        and not address_in_ranges(a["address"], ranges)
+        and a["address"] not in valid_addresses
+        and not address_in_ranges(a["address"], actx.base_regions)
     ]
 
     table = (
