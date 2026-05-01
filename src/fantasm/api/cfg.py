@@ -149,6 +149,177 @@ def build_call_graph(
     return graph
 
 
+# --- Basic-block analysis ---------------------------------------
+
+
+_BRANCH_MNEMONICS_BB = frozenset(
+    {"bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs"}
+)
+_JUMP_MNEMONICS_BB = frozenset({"jmp", "rts", "rti", "brk"})
+
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class BasicBlockExit:
+    """Where a basic block transfers control next.
+
+    ``kind`` is one of ``"branch"``, ``"fall"``, ``"jump"``,
+    ``"return"``, ``"call"``. ``target`` is the destination address
+    or ``None`` for ``"return"`` / dynamic jumps.
+    """
+
+    target: int | None
+    kind: str
+
+
+@dataclass(frozen=True)
+class BasicBlockEntry:
+    """A predecessor of a basic block.
+
+    ``kind`` mirrors :class:`BasicBlockExit.kind`.
+    """
+
+    source: int
+    kind: str
+
+
+@dataclass(frozen=True)
+class BasicBlock:
+    """One straight-line basic block.
+
+    ``items`` is the list of code items (from the JSON disassembly)
+    in this block. ``commented`` is the number of items with a
+    non-empty ``comment_inline``; ``total`` is ``len(items)``.
+    """
+
+    addr: int
+    items: tuple[dict, ...]
+    entries: tuple[BasicBlockEntry, ...]
+    exits: tuple[BasicBlockExit, ...]
+    commented: int
+    total: int
+
+
+def find_basic_blocks(items: Iterable[dict]) -> list[BasicBlock]:
+    """Identify basic blocks within a sequence of code items.
+
+    A basic block starts at:
+
+    1. The first item;
+    2. The target of any branch (within the items list);
+    3. The item after any branch / jump / call;
+    4. Any item that carries a label.
+
+    Each block ends at a branch / jump / return, or fall-through
+    into the next block. Returns blocks sorted by start address,
+    with ``entries`` populated by reverse-walking the exits.
+    """
+    item_list = [item for item in items if item.get("type") == "code"]
+    if not item_list:
+        return []
+
+    item_list.sort(key=lambda item: item["addr"])
+    addr_set = {item["addr"] for item in item_list}
+
+    block_starts: set[int] = {item_list[0]["addr"]}
+    for index, item in enumerate(item_list):
+        mnemonic = item.get("mnemonic", "")
+        target = item.get("target")
+        if mnemonic in _BRANCH_MNEMONICS_BB:
+            if target is not None and target in addr_set:
+                block_starts.add(target)
+            if index + 1 < len(item_list):
+                block_starts.add(item_list[index + 1]["addr"])
+        elif mnemonic in _JUMP_MNEMONICS_BB or mnemonic == "jsr":
+            if index + 1 < len(item_list):
+                block_starts.add(item_list[index + 1]["addr"])
+
+    for item in item_list:
+        if item.get("labels"):
+            block_starts.add(item["addr"])
+
+    sorted_starts = sorted(block_starts & addr_set)
+
+    blocks: list[BasicBlock] = []
+    for block_index, start in enumerate(sorted_starts):
+        if block_index + 1 < len(sorted_starts):
+            end = sorted_starts[block_index + 1]
+        else:
+            end = item_list[-1]["addr"] + 1
+        block_items = [
+            item for item in item_list if start <= item["addr"] < end
+        ]
+        if not block_items:
+            continue
+
+        commented_count = sum(
+            1 for item in block_items if item.get("comment_inline")
+        )
+
+        last = block_items[-1]
+        last_mnemonic = last.get("mnemonic", "")
+        last_target = last.get("target")
+
+        exits: list[BasicBlockExit] = []
+        next_start = (
+            sorted_starts[block_index + 1]
+            if block_index + 1 < len(sorted_starts)
+            else None
+        )
+        if last_mnemonic in _BRANCH_MNEMONICS_BB:
+            if last_target is not None:
+                exits.append(BasicBlockExit(last_target, "branch"))
+            if next_start is not None:
+                exits.append(BasicBlockExit(next_start, "fall"))
+        elif last_mnemonic == "jmp":
+            if last_target is not None:
+                exits.append(BasicBlockExit(last_target, "jump"))
+        elif last_mnemonic in {"rts", "rti", "brk"}:
+            exits.append(BasicBlockExit(None, "return"))
+        elif last_mnemonic == "jsr":
+            if next_start is not None:
+                exits.append(BasicBlockExit(next_start, "fall"))
+        else:
+            if next_start is not None:
+                exits.append(BasicBlockExit(next_start, "fall"))
+
+        blocks.append(
+            BasicBlock(
+                addr=start,
+                items=tuple(block_items),
+                entries=(),  # filled after the loop
+                exits=tuple(exits),
+                commented=commented_count,
+                total=len(block_items),
+            )
+        )
+
+    block_addrs = {block.addr for block in blocks}
+    entries_by_block: dict[int, list[BasicBlockEntry]] = {
+        block.addr: [] for block in blocks
+    }
+    for block in blocks:
+        for exit_record in block.exits:
+            if exit_record.target is not None and exit_record.target in block_addrs:
+                entries_by_block[exit_record.target].append(
+                    BasicBlockEntry(source=block.addr, kind=exit_record.kind)
+                )
+
+    return [
+        BasicBlock(
+            addr=block.addr,
+            items=block.items,
+            entries=tuple(entries_by_block[block.addr]),
+            exits=block.exits,
+            commented=block.commented,
+            total=block.total,
+        )
+        for block in blocks
+    ]
+
+
 def resolve_sub_node(graph: nx.DiGraph, target: str) -> str | None:
     """Resolve a textual target (hex address or name) to a node ID.
 
@@ -177,4 +348,11 @@ def resolve_sub_node(graph: nx.DiGraph, target: str) -> str | None:
     return None
 
 
-__all__ = ["build_call_graph", "resolve_sub_node"]
+__all__ = [
+    "BasicBlock",
+    "BasicBlockEntry",
+    "BasicBlockExit",
+    "build_call_graph",
+    "find_basic_blocks",
+    "resolve_sub_node",
+]

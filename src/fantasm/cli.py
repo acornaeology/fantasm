@@ -22,7 +22,7 @@ from .api.audit import (
     load_subroutines,
 )
 from .api.audit import build_memory_regions
-from .api.cfg import build_call_graph, resolve_sub_node
+from .api.cfg import build_call_graph, find_basic_blocks, resolve_sub_node
 from .api.comment_check import run_checks
 from .api.compare import compare_roms
 from .api.context import compute_call_depths, extract_sub_context
@@ -780,6 +780,114 @@ def cfg_sub(version_id: str, target: str) -> Reports:
             )
         ),
     )
+
+
+@cfg.command(
+    "blocks",
+    help=(
+        "Identify basic blocks within a version's disassembly. "
+        "Without --sub, surveys every subroutine. With --sub, shows "
+        "only the named subroutine's blocks. --uncommented-only "
+        "filters to blocks with zero inline comments and at least "
+        "two items, the typical annotation-gap-finding workflow."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "--sub",
+    "sub_target",
+    help="Restrict to one subroutine (hex address or name).",
+)
+@click.option(
+    "--uncommented-only",
+    is_flag=True,
+    help="Only show blocks with zero comments and >= 2 items.",
+)
+@click.option(
+    "--min-items",
+    type=click.IntRange(1, 100),
+    default=2,
+    show_default=True,
+    help="Minimum item count for a block to be included.",
+)
+@report_output(reports={"blocks": "Basic blocks"})
+def cfg_blocks(
+    version_id: str,
+    sub_target: str | None,
+    uncommented_only: bool,
+    min_items: int,
+) -> Reports:
+    import json as _json
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+
+    base_regions = effective_regions_for(project_context, version_id)
+    data = _json.loads(files.json_filepath.read_text())
+    memory_regions = build_memory_regions(
+        data["meta"], base_regions=base_regions
+    )
+
+    if sub_target is None:
+        items = data["items"]
+        sub_label = "(all subroutines)"
+    else:
+        audit_subs = load_subroutines(
+            files.json_filepath, memory_regions=memory_regions
+        )
+        sub = find_sub(audit_subs, sub_target)
+        if sub is None:
+            raise click.UsageError(
+                f"subroutine {sub_target!r} not found in {version_id}"
+            )
+        items = sub["items"]
+        sub_label = f"{sub['name']} (&{sub['addr']:04X})"
+
+    blocks = find_basic_blocks(items)
+    if uncommented_only:
+        blocks = [
+            b for b in blocks if b.commented == 0 and b.total >= 2
+        ]
+    blocks = [b for b in blocks if b.total >= min_items]
+
+    table = (
+        TableContent(
+            title=f"Basic blocks in {version_id} / {sub_label}",
+            description=(
+                f"{len(blocks)} blocks"
+                + (" (uncommented only)" if uncommented_only else "")
+            ),
+        )
+        .add_column("addr", "Addr")
+        .add_column("items", "Items")
+        .add_column("commented", "Commented")
+        .add_column("density", "Density")
+        .add_column("entries", "Entries")
+        .add_column("exits", "Exits")
+        .add_column("exit_kinds", "Exit kinds")
+    )
+    for block in blocks:
+        density_pct = (
+            100 * block.commented / block.total if block.total else 0.0
+        )
+        exit_kinds = ", ".join(
+            sorted({exit_record.kind for exit_record in block.exits})
+        )
+        table.add_row(
+            addr=f"&{block.addr:04X}",
+            items=str(block.total),
+            commented=str(block.commented),
+            density=f"{density_pct:.0f}%",
+            entries=str(len(block.entries)),
+            exits=str(len(block.exits)),
+            exit_kinds=exit_kinds,
+        )
+    return Reports(blocks=Report(data=table))
 
 
 @cfg.command(

@@ -28,7 +28,14 @@ from .labels import (
     find_containing_sub_for_addr,
     sort_labels,
 )
-from .cfg import build_call_graph, resolve_sub_node
+from .cfg import (
+    BasicBlock,
+    BasicBlockEntry,
+    BasicBlockExit,
+    build_call_graph,
+    find_basic_blocks,
+    resolve_sub_node,
+)
 from .backfill import (
     AnnotationDiff,
     PropagationCandidate,

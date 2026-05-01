@@ -203,6 +203,45 @@ class TestCommentsCheck:
         )
         assert result.exit_code == 0, result.output
 
+    def test_cfg_blocks(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        json_filepath = version_dirpath / "output" / "demo-1.0.json"
+        json_filepath.parent.mkdir(exist_ok=True)
+        # A branch creates two blocks.
+        json_filepath.write_text(
+            json.dumps({
+                "meta": {"load_addr": 0x8000, "end_addr": 0x8100},
+                "subroutines": [{"addr": 0x8000, "name": "main"}],
+                "items": [
+                    {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+                    {
+                        "addr": 0x8002,
+                        "type": "code",
+                        "mnemonic": "bne",
+                        "target": 0x8005,
+                    },
+                    {"addr": 0x8004, "type": "code", "mnemonic": "nop"},
+                    {"addr": 0x8005, "type": "code", "mnemonic": "rts"},
+                ],
+            })
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "cfg", "blocks", "1.0", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # At least three blocks: 0x8000, 0x8004, 0x8005.
+        assert "8000" in result.output
+        assert "8005" in result.output
+
     def test_cfg_sub_context(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")

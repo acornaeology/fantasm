@@ -8,7 +8,13 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from fantasm.api.cfg import build_call_graph, resolve_sub_node
+from fantasm.api.cfg import (
+    BasicBlock,
+    BasicBlockExit,
+    build_call_graph,
+    find_basic_blocks,
+    resolve_sub_node,
+)
 from fantasm.api.context import (
     CallSiteContext,
     ExitPointContext,
@@ -313,3 +319,105 @@ class TestExtractSubContext:
             SUB_CONTEXT_HELPER_SUB, SUB_CONTEXT_ASM, graph
         )
         assert sub_context.call_sites == ()
+
+
+# --- find_basic_blocks -------------------------------------------
+
+
+class TestFindBasicBlocks:
+    def test_straight_line(self) -> None:
+        # Three sequential code items with no branches → one block.
+        items = [
+            {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+            {"addr": 0x8002, "type": "code", "mnemonic": "sta"},
+            {"addr": 0x8004, "type": "code", "mnemonic": "rts"},
+        ]
+        blocks = find_basic_blocks(items)
+        assert len(blocks) == 1
+        assert blocks[0].addr == 0x8000
+        assert blocks[0].total == 3
+        # The RTS produces a "return" exit with target=None.
+        assert blocks[0].exits == (BasicBlockExit(None, "return"),)
+
+    def test_branch_creates_two_blocks(self) -> None:
+        # A conditional branch splits into two blocks.
+        items = [
+            {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+            {
+                "addr": 0x8002,
+                "type": "code",
+                "mnemonic": "bne",
+                "target": 0x8006,
+            },
+            {"addr": 0x8004, "type": "code", "mnemonic": "nop"},
+            {"addr": 0x8006, "type": "code", "mnemonic": "rts"},
+        ]
+        blocks = find_basic_blocks(items)
+        addrs = sorted(b.addr for b in blocks)
+        # 0x8000 (start), 0x8004 (after branch), 0x8006 (branch target).
+        assert addrs == [0x8000, 0x8004, 0x8006]
+
+    def test_entries_filled_from_exits(self) -> None:
+        items = [
+            {
+                "addr": 0x8000,
+                "type": "code",
+                "mnemonic": "bne",
+                "target": 0x8004,
+            },
+            {"addr": 0x8002, "type": "code", "mnemonic": "rts"},
+            {"addr": 0x8004, "type": "code", "mnemonic": "rts"},
+        ]
+        blocks = find_basic_blocks(items)
+        target_block = next(b for b in blocks if b.addr == 0x8004)
+        # Entered by the branch from 0x8000.
+        assert any(
+            entry.source == 0x8000 and entry.kind == "branch"
+            for entry in target_block.entries
+        )
+
+    def test_label_starts_a_block(self) -> None:
+        # An item carrying a label is itself a block start, even with
+        # no branch leading to it directly.
+        items = [
+            {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+            {
+                "addr": 0x8002,
+                "type": "code",
+                "mnemonic": "sta",
+                "labels": ["middle"],
+            },
+            {"addr": 0x8004, "type": "code", "mnemonic": "rts"},
+        ]
+        blocks = find_basic_blocks(items)
+        addrs = sorted(b.addr for b in blocks)
+        assert 0x8002 in addrs
+
+    def test_skips_non_code_items(self) -> None:
+        items = [
+            {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+            {"addr": 0x8002, "type": "byte"},
+            {"addr": 0x8003, "type": "code", "mnemonic": "rts"},
+        ]
+        blocks = find_basic_blocks(items)
+        assert all(
+            all(item.get("type") == "code" for item in block.items)
+            for block in blocks
+        )
+
+    def test_commented_count(self) -> None:
+        items = [
+            {
+                "addr": 0x8000,
+                "type": "code",
+                "mnemonic": "lda",
+                "comment_inline": "load",
+            },
+            {"addr": 0x8002, "type": "code", "mnemonic": "rts"},
+        ]
+        blocks = find_basic_blocks(items)
+        assert blocks[0].commented == 1
+        assert blocks[0].total == 2
+
+    def test_empty_input(self) -> None:
+        assert find_basic_blocks([]) == []
