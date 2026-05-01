@@ -24,7 +24,6 @@ dependencies = [
     "click>=8.1",
     "asyoulikeit>=0.1",
     "networkx>=3.0",
-    "py8dis @ git+https://github.com/acornaeology/py8dis.git",
 ]
 
 [dependency-groups]

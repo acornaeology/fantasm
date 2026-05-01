@@ -63,6 +63,16 @@ generator.
 
 ## External tooling assumed available
 
+- **py8dis** (the disassembler that produces the JSON / ASM /
+  driver-script artefacts fantasm operates on) — a workflow
+  prerequisite, **not** a runtime dependency of fantasm. Users are
+  expected to have it installed in their development environment to
+  generate disassembly output; fantasm consumes the artefacts and
+  never imports the package. Currently a private fork at
+  https://github.com/acornaeology/py8dis; will eventually be
+  published on PyPI as `msabeeb`. Don't list it in `[project]
+  dependencies` — PyPI rejects direct git-URL deps and fantasm
+  doesn't actually link against it.
 - **beebasm** (the BBC Micro 6502 cross-assembler) — assumed on `PATH`.
   Tests obtain its location via the `beebasm_filepath` fixture in
   `tests/conftest.py` and skip cleanly when it is absent.
