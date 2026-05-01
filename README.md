@@ -36,8 +36,12 @@ Options:
   -h, --help                Show this message and exit.
 
 Commands:
-  info     Show the resolved project context.
-  project  Initialise and manage fantasm projects.
+  audit     Subroutine annotation audit.
+  comments  Comment / annotation consistency checks.
+  compare   Compare two ROM versions at byte / opcode / full-instruction...
+  info      Show the resolved project context.
+  project   Initialise and manage fantasm projects.
+  verify    Verify a disassembly round-trips: assemble its .asm with...
 ```
 
 The top-level `fantasm` command accepts a `--project-root` option and

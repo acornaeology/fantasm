@@ -8,6 +8,15 @@ import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from . import __version__
+from .api.audit import (
+    ALL_FLAGS,
+    end_type,
+    find_sub,
+    find_undeclared_subs,
+    load_subroutines,
+)
+from .api.comment_check import run_checks
+from .api.compare import compare_roms
 from .api.paths import project_rom_prefixes, project_versions_dirpath
 from .api.project import (
     ProjectInitConfig,
@@ -15,6 +24,11 @@ from .api.project import (
     init_project,
     list_versions,
 )
+from .api.verify import (
+    BeebasmNotFoundError,
+    verify_round_trip,
+)
+from .cli_helpers import require_project, resolve_version_files
 from .config import ProjectContext, resolve_project_context
 
 
@@ -65,6 +79,245 @@ def info() -> Reports:
         )
     )
     return Reports(project=Report(data=table))
+
+
+@main.command(
+    help=(
+        "Verify a disassembly round-trips: assemble its .asm with "
+        "beebasm and compare bytes to the original ROM."
+    ),
+)
+@click.argument("version_id")
+@click.pass_context
+def verify(ctx: click.Context, version_id: str) -> None:
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    try:
+        result = verify_round_trip(files.rom_filepath, files.asm_filepath)
+    except FileNotFoundError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except BeebasmNotFoundError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    if result.matched:
+        click.echo(
+            f"Verification PASSED: {result.rom_size} bytes match"
+        )
+        return
+    click.echo(
+        f"Verification FAILED: rom={result.rom_size}b "
+        f"assembled={result.assembled_size}b "
+        + (
+            f"first_diff=&{result.first_diff_offset:04X}"
+            if result.first_diff_offset is not None
+            else "(beebasm error)"
+        ),
+        err=True,
+    )
+    if result.beebasm_returncode != 0 and result.beebasm_stderr:
+        click.echo(result.beebasm_stderr, err=True)
+    ctx.exit(1)
+
+
+@main.command(
+    help=(
+        "Compare two ROM versions at byte / opcode / full-instruction "
+        "granularity and print a diff report."
+    ),
+)
+@click.argument("version_a")
+@click.argument("version_b")
+@click.option(
+    "--cpu",
+    default="6502",
+    show_default=True,
+    help='Default CPU: "6502" or "65c02".',
+)
+@click.option(
+    "--rom-base",
+    type=click.IntRange(0, 0xFFFF),
+    default=0x8000,
+    show_default=True,
+    help="ROM load address used for diff-line address formatting.",
+)
+@click.pass_context
+def compare(
+    ctx: click.Context, version_a: str, version_b: str, cpu: str, rom_base: int
+) -> None:
+    project_context = require_project(ctx)
+    files_a = resolve_version_files(project_context, version_a)
+    files_b = resolve_version_files(project_context, version_b)
+
+    if not files_a.rom_filepath.exists():
+        raise click.UsageError(
+            f"ROM file not found: {files_a.rom_filepath}"
+        )
+    if not files_b.rom_filepath.exists():
+        raise click.UsageError(
+            f"ROM file not found: {files_b.rom_filepath}"
+        )
+
+    data_a = files_a.rom_filepath.read_bytes()
+    data_b = files_b.rom_filepath.read_bytes()
+    report = compare_roms(
+        data_a, data_b, version_a, version_b,
+        cpu_a=cpu, cpu_b=cpu, rom_base=rom_base,
+    )
+    click.echo(report)
+
+
+@main.group(help="Subroutine annotation audit.")
+def audit() -> None:
+    pass
+
+
+@audit.command(
+    "summary",
+    help="List every subroutine with its computed flags.",
+)
+@click.argument("version_id")
+@click.option(
+    "--flag",
+    type=click.Choice(ALL_FLAGS, case_sensitive=False),
+    help="Restrict to subroutines carrying this flag.",
+)
+@report_output(reports={"summary": "Subroutine summary"})
+def audit_summary(version_id: str, flag: str | None) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath} (run disassemble first)"
+        )
+
+    subs = load_subroutines(files.json_filepath)
+    if flag:
+        flag_upper = flag.upper()
+        subs = [s for s in subs if flag_upper in s["flags"]]
+
+    table = (
+        TableContent(
+            title=f"Subroutines in {version_id}",
+            description=(
+                f"{len(subs)} subroutines"
+                + (f" with flag {flag.upper()}" if flag else "")
+            ),
+        )
+        .add_column("addr", "Addr")
+        .add_column("name", "Name")
+        .add_column("end", "End")
+        .add_column("items", "Code/Data")
+        .add_column("flags", "Flags")
+    )
+    for sub in subs:
+        table.add_row(
+            addr=f"&{sub['addr']:04X}",
+            name=sub["name"],
+            end=end_type(sub),
+            items=f"{sub['code_count']}/{sub['data_count']}",
+            flags=",".join(sorted(sub["flags"])) if sub["flags"] else "",
+        )
+    return Reports(summary=Report(data=table))
+
+
+@audit.command(
+    "undeclared",
+    help="List JSR targets that lack subroutine() declarations.",
+)
+@click.argument("version_id")
+@report_output(reports={"undeclared": "Undeclared JSR targets"})
+def audit_undeclared(version_id: str) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath} (run disassemble first)"
+        )
+
+    candidates = find_undeclared_subs(files.json_filepath)
+    table = (
+        TableContent(
+            title=f"Undeclared JSR targets in {version_id}",
+            description=f"{len(candidates)} candidates",
+        )
+        .add_column("addr", "Addr")
+        .add_column("name", "Name")
+        .add_column("range", "Range")
+        .add_column("items", "Code/Data")
+        .add_column("calls", "Calls")
+        .add_column("container", "Container")
+    )
+    for c in candidates:
+        table.add_row(
+            addr=f"&{c['addr']:04X}",
+            name=c["name"],
+            range=c["range_str"],
+            items=f"{c['code_count']}/{c['data_count']}",
+            calls=str(c["caller_count"]),
+            container=c["container"],
+        )
+    return Reports(undeclared=Report(data=table))
+
+
+@main.group(help="Comment / annotation consistency checks.")
+def comments() -> None:
+    pass
+
+
+@comments.command(
+    "check",
+    help=(
+        "Run the comment-vs-code consistency checks against the "
+        "version's JSON output."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "--sub",
+    "sub_target",
+    help="Restrict to the subroutine starting at this hex address.",
+)
+@report_output(reports={"findings": "Comment-check findings"})
+def comments_check(version_id: str, sub_target: str | None) -> Reports:
+    import json as _json
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath} (run disassemble first)"
+        )
+
+    data = _json.loads(files.json_filepath.read_text())
+    try:
+        findings = run_checks(data, sub_target=sub_target)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    high = sum(1 for f in findings if f["confidence"] == "HIGH")
+    medium = sum(1 for f in findings if f["confidence"] == "MEDIUM")
+
+    table = (
+        TableContent(
+            title=f"Comment findings for {version_id}",
+            description=f"{high} HIGH, {medium} MEDIUM",
+        )
+        .add_column("addr", "Addr")
+        .add_column("conf", "Confidence")
+        .add_column("check", "Check")
+        .add_column("message", "Message")
+    )
+    for f in sorted(findings, key=lambda x: (x["confidence"] != "HIGH", x["addr"])):
+        table.add_row(
+            addr=f"&{f['addr']:04X}",
+            conf=f["confidence"],
+            check=f["check"],
+            message=f["message"],
+        )
+    return Reports(findings=Report(data=table))
 
 
 @main.group(help="Initialise and manage fantasm projects.")
