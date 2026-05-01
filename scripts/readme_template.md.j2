@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/acornaeology/fantasm/master/docs/_static/fantasm-hero.png"
-       alt="fantasm" width="800">
+       alt="fantasm" width="533">
 </p>
 
 # Fantasm
