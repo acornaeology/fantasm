@@ -90,6 +90,18 @@ from .project import (
     render_fantasm_toml,
 )
 from .verify import BeebasmNotFoundError, VerifyResult, verify_round_trip
+from .version_graph import (
+    Edge,
+    NoPathError,
+    Region,
+    RelocBlock,
+    Version,
+    VersionGraph,
+    VersionGraphCycleError,
+    VersionGraphError,
+    VersionNotInGraphError,
+    load_version_graph,
+)
 from .context import compute_call_depths
 from .lint import (
     address_in_ranges,
