@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/acornaeology/fantasm/master/docs/_static/fantasm-hero.png"
+       alt="fantasm" width="800">
+</p>
+
 # Fantasm
 
 The Fantastic (dis-/re-)Assembly tools for 6502 code, version `0.4.3`.

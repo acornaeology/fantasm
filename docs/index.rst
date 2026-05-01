@@ -1,3 +1,9 @@
+.. image:: _static/fantasm-hero.png
+   :alt: fantasm
+   :align: center
+
+|
+
 fantasm
 =======
 

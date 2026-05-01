@@ -53,11 +53,8 @@ source_suffix = {
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
-# fantasm has no logo art yet; the theme falls back to a wordmark
-# derived from `project`. Drop in `logo.svg` / `logo.png` under
-# _static and uncomment the two settings below to swap it in.
-# html_logo = "_static/logo.svg"
-# html_favicon = "_static/logo.png"
+html_logo = "_static/logo.svg"
+html_favicon = "_static/logo.png"
 
 html_theme_options = {
     "navigation_depth": 3,
