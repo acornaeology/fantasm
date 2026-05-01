@@ -31,6 +31,36 @@ we add tests, but the approach is constrained by the recovery context:
 
 See `docs/testing.md` for a fuller treatment.
 
+## README is generated, not hand-written
+
+`README.md` is produced by `scripts/generate_readme.py` from a Jinja2
+template at `scripts/readme_template.md.j2`. The generator imports
+`fantasm.cli.main` and runs it via `click.testing.CliRunner` (inside
+`isolated_filesystem`, with `COLUMNS=80` / `NO_COLOR=1` and
+`FANTASM_PROJECT_ROOT` cleared) to capture deterministic `--help` text
+and a sample `info` table.
+
+```bash
+uv run python scripts/generate_readme.py           # regenerate README.md
+uv run python scripts/generate_readme.py --check   # verify; prints diff + exits 1 on drift
+```
+
+A pre-commit hook (`.pre-commit-config.yaml`) runs the `--check`
+variant whenever `README.md`, the generator, the template, or any
+`src/fantasm/*.py` changes — so editing the public CLI surface forces
+a README regeneration before the commit lands. First-time setup in a
+fresh clone:
+
+```bash
+uv run pre-commit install
+```
+
+A `readme-check` job in `.github/workflows/ci.yml` runs the same
+`--check` on every push and PR as a safety net for contributors who
+bypass the local hook. **Never hand-edit `README.md`** — edit the
+template (or the generator, or the CLI source) and re-run the
+generator.
+
 ## External tooling assumed available
 
 - **beebasm** (the BBC Micro 6502 cross-assembler) — assumed on `PATH`.

@@ -1,6 +1,6 @@
 # Fantasm
 
-The Fantastic (dis-/re-)Assembly tools for 6502 code, version `0.1.0`.
+The Fantastic (dis-/re-)Assembly tools for 6502 code, version `{{ version }}`.
 
 Fantasm is a consolidated suite of tools for working on annotated
 disassemblies of 6502-based ROMs (originally those from the Acorn / BBC
@@ -23,20 +23,7 @@ uv sync
 
 ```console
 $ fantasm --help
-Usage: fantasm [OPTIONS] COMMAND [ARGS]...
-
-  Fantasm — the Fantastic (dis-/re-)Assembly tools for 6502 code.
-
-Options:
-  --version                 Show the version and exit.
-  --project-root DIRECTORY  Project root directory. Overrides
-                            FANTASM_PROJECT_ROOT. If neither is given, fantasm
-                            searches upwards from the current directory for a
-                            fantasm.toml.
-  -h, --help                Show this message and exit.
-
-Commands:
-  info  Show the resolved project context.
+{{ help_top }}
 ```
 
 The top-level `fantasm` command accepts a `--project-root` option and
@@ -54,35 +41,7 @@ friends) from
 
 ```console
 $ fantasm info --help
-Usage: fantasm info [OPTIONS]
-
-  Show the resolved project context.
-
-Options:
-  Report Output Options: 
-    --no-reports              Suppress all report output. The handler still runs
-                              (useful for action commands whose reports are
-                              incidental); only rendering is skipped. Mutually
-                              exclusive with --report and --all-reports.
-    --all-reports             Render every report the handler returns,
-                              regardless of the command's default_reports.
-                              Useful for commands whose default is a subset (or
-                              silent) but where you want the full picture this
-                              time. Mutually exclusive with --report and --no-
-                              reports.
-    --report [project]        Report name(s) to display (can be specified
-                              multiple times). Shows all if omitted. Valid
-                              values: project.
-    --header / --no-header    Include column headers in output. Overrides each
-                              report's default. Format-specific: TSV prefixes
-                              first cell with '#', display omits
-                              headers/title/caption, JSON ignores this flag.
-    --detailed / --essential  Include detailed columns or only essential
-                              columns. Auto-detects based on output format if
-                              not specified.
-    --as [display|json|tsv]   Output format for tabular data. Defaults to
-                              'display' for terminals, 'tsv' for pipes.
-  -h, --help                  Show this message and exit.
+{{ help_info }}
 ```
 
 Sample output (an explicit project root that does not contain a
@@ -90,16 +49,7 @@ Sample output (an explicit project root that does not contain a
 
 ```console
 $ fantasm --project-root /path/to/your/project info
-              Fantasm project              
-┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Key             ┃ Value                 ┃
-┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
-│ project_root    │ /path/to/your/project │
-│ config_filepath │ (none)                │
-│ config_keys     │ (empty)               │
-└─────────────────┴───────────────────────┘
- Resolved project context for the current  
-                invocation.
+{{ info_display }}
 ```
 
 The same invocation through a pipe (or with `--as tsv`) emits
@@ -107,10 +57,7 @@ tab-separated output suitable for downstream tooling:
 
 ```console
 $ fantasm --project-root /path/to/your/project info --as tsv
-# Key	Value
-project_root	/path/to/your/project
-config_filepath	(none)
-config_keys	(empty)
+{{ info_tsv }}
 ```
 
 ## Programmatic API
