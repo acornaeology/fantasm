@@ -129,11 +129,29 @@ class TestAddressRangesFromData:
         # = 16. Two blocks here, the second is the last.
         assert cluster[1] >= 0x0501  # padded forward
 
-    def test_empty_items_returns_empty(self) -> None:
+    def test_empty_items_returns_base_regions(self) -> None:
+        # With no items, the ROM range is also omitted; only the
+        # base_regions survive so the caller still has its workspace
+        # ranges.
         ranges = address_ranges_from_data(
             {"meta": {"load_addr": 0x8000, "end_addr": 0x8100}, "items": []}
         )
         assert ranges == []
+        ranges = address_ranges_from_data(
+            {"meta": {"load_addr": 0x8000, "end_addr": 0x8100}, "items": []},
+            base_regions=[(0x0000, 0x00FF)],
+        )
+        assert ranges == [(0x0000, 0x00FF)]
+
+    def test_base_regions_prepended(self) -> None:
+        ranges = address_ranges_from_data(
+            SAMPLE_DATA,
+            base_regions=[(0x0000, 0x00FF), (0xFC00, 0xFFFF)],
+        )
+        assert ranges[0] == (0x0000, 0x00FF)
+        assert ranges[1] == (0xFC00, 0xFFFF)
+        # ROM range follows.
+        assert (0x8000, 0x80FF) in ranges
 
     def test_custom_rom_size_default(self) -> None:
         # When meta.end_addr is missing, rom_size_default kicks in.

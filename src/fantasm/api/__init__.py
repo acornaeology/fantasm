@@ -146,7 +146,6 @@ from .comment_check import (
 )
 from .audit import (
     ALL_FLAGS,
-    BASE_MEMORY_REGIONS,
     BRANCH_MNEMONICS,
     TERMINATING_MNEMONICS,
     build_memory_regions,
@@ -181,7 +180,6 @@ __all__ = [
     "ALL_FLAGS",
     "AUTO_LABEL_RE",
     "AsmSection",
-    "BASE_MEMORY_REGIONS",
     "BRANCH_MNEMONICS",
     "CATEGORY_ORDER",
     "OPCODE_LENGTHS",

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import bisect
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 import networkx as nx
@@ -25,18 +26,30 @@ import networkx as nx
 from .audit import build_memory_regions, region_for_addr
 
 
-def build_call_graph(json_filepath: str | Path) -> nx.DiGraph:
+def build_call_graph(
+    json_filepath: str | Path,
+    *,
+    memory_regions: Iterable[tuple[int, int]] | None = None,
+) -> nx.DiGraph:
     """Build a call-graph DiGraph from a py8dis JSON output.
 
     Nodes (keyed by ``"0xNNNN"``) represent ROM subroutines and
     external OS entry points. Edges carry ``call_sites`` (sorted list
     of caller addresses) and ``type`` (``"jsr"`` or ``"jmp"``).
+
+    ``memory_regions`` constrains where subroutine extents may run.
+    Defaults to the ROM range alone (derived from the JSON's
+    ``meta``); pass effective regions from the version graph for
+    project-aware behaviour.
     """
     data = json.loads(Path(json_filepath).read_text())
     items = data["items"]
     raw_subs = data.get("subroutines", [])
     external_labels = data.get("external_labels", {})
-    memory_regions = build_memory_regions(data.get("meta", {}))
+    if memory_regions is None:
+        memory_regions = build_memory_regions(data.get("meta", {}))
+    else:
+        memory_regions = list(memory_regions)
 
     addr_to_sub = {s["addr"]: s for s in raw_subs}
     ext_addr_to_name = {v: k for k, v in external_labels.items()}

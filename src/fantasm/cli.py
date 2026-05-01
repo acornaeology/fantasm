@@ -17,6 +17,7 @@ from .api.audit import (
     find_undeclared_subs,
     load_subroutines,
 )
+from .api.audit import build_memory_regions
 from .api.cfg import build_call_graph, resolve_sub_node
 from .api.comment_check import run_checks
 from .api.compare import compare_roms
@@ -61,7 +62,11 @@ from .api.version_graph import (
     VersionNotInGraphError,
     load_version_graph,
 )
-from .cli_helpers import require_project, resolve_version_files
+from .cli_helpers import (
+    effective_regions_for,
+    require_project,
+    resolve_version_files,
+)
 from .config import ProjectContext, resolve_project_context
 
 
@@ -216,6 +221,10 @@ def audit() -> None:
 )
 @report_output(reports={"summary": "Subroutine summary"})
 def audit_summary(version_id: str, flag: str | None) -> Reports:
+    import json as _json
+
+    from .api.audit import build_memory_regions
+
     ctx = click.get_current_context()
     project_context = require_project(ctx)
     files = resolve_version_files(project_context, version_id)
@@ -224,7 +233,14 @@ def audit_summary(version_id: str, flag: str | None) -> Reports:
             f"JSON not found: {files.json_filepath} (run disassemble first)"
         )
 
-    subs = load_subroutines(files.json_filepath)
+    base_regions = effective_regions_for(project_context, version_id)
+    data = _json.loads(files.json_filepath.read_text())
+    memory_regions = build_memory_regions(
+        data["meta"], base_regions=base_regions
+    )
+    subs = load_subroutines(
+        files.json_filepath, memory_regions=memory_regions
+    )
     if flag:
         flag_upper = flag.upper()
         subs = [s for s in subs if flag_upper in s["flags"]]
@@ -325,8 +341,9 @@ def comments_check(version_id: str, sub_target: str | None) -> Reports:
         )
 
     data = _json.loads(files.json_filepath.read_text())
+    base_regions = effective_regions_for(project_context, version_id)
     try:
-        findings = run_checks(data, sub_target=sub_target)
+        findings = run_checks(data, sub_target=sub_target, regions=base_regions)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
 
@@ -369,7 +386,16 @@ def cfg_leaves(version_id: str) -> Reports:
         raise click.UsageError(
             f"JSON not found: {files.json_filepath}"
         )
-    graph = build_call_graph(files.json_filepath)
+    base_regions = effective_regions_for(project_context, version_id)
+    if base_regions:
+        import json as _json
+        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
+        memory_regions = build_memory_regions(meta, base_regions=base_regions)
+        graph = build_call_graph(
+            files.json_filepath, memory_regions=memory_regions
+        )
+    else:
+        graph = build_call_graph(files.json_filepath)
 
     table = (
         TableContent(
@@ -405,7 +431,16 @@ def cfg_roots(version_id: str) -> Reports:
         raise click.UsageError(
             f"JSON not found: {files.json_filepath}"
         )
-    graph = build_call_graph(files.json_filepath)
+    base_regions = effective_regions_for(project_context, version_id)
+    if base_regions:
+        import json as _json
+        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
+        memory_regions = build_memory_regions(meta, base_regions=base_regions)
+        graph = build_call_graph(
+            files.json_filepath, memory_regions=memory_regions
+        )
+    else:
+        graph = build_call_graph(files.json_filepath)
 
     table = (
         TableContent(
@@ -439,7 +474,16 @@ def cfg_depth(version_id: str) -> Reports:
         raise click.UsageError(
             f"JSON not found: {files.json_filepath}"
         )
-    graph = build_call_graph(files.json_filepath)
+    base_regions = effective_regions_for(project_context, version_id)
+    if base_regions:
+        import json as _json
+        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
+        memory_regions = build_memory_regions(meta, base_regions=base_regions)
+        graph = build_call_graph(
+            files.json_filepath, memory_regions=memory_regions
+        )
+    else:
+        graph = build_call_graph(files.json_filepath)
     depths = compute_call_depths(graph)
 
     sorted_nodes = sorted(depths.items(), key=lambda x: (-x[1], x[0]))
@@ -481,7 +525,16 @@ def cfg_sub(version_id: str, target: str) -> Reports:
         raise click.UsageError(
             f"JSON not found: {files.json_filepath}"
         )
-    graph = build_call_graph(files.json_filepath)
+    base_regions = effective_regions_for(project_context, version_id)
+    if base_regions:
+        import json as _json
+        meta = _json.loads(files.json_filepath.read_text()).get("meta", {})
+        memory_regions = build_memory_regions(meta, base_regions=base_regions)
+        graph = build_call_graph(
+            files.json_filepath, memory_regions=memory_regions
+        )
+    else:
+        graph = build_call_graph(files.json_filepath)
     node_id = resolve_sub_node(graph, target)
     if node_id is None:
         raise click.UsageError(
@@ -700,8 +753,13 @@ def labels_classify(version_id: str, category: str | None) -> Reports:
     data = _json.loads(files.json_filepath.read_text())
     items = data["items"]
     target_refs = build_target_refs(items)
-    audit_subs = load_subroutines(files.json_filepath)
-    memory_regions = build_memory_regions(data.get("meta", {}))
+    base_regions = effective_regions_for(project_context, version_id)
+    memory_regions = build_memory_regions(
+        data.get("meta", {}), base_regions=base_regions
+    )
+    audit_subs = load_subroutines(
+        files.json_filepath, memory_regions=memory_regions
+    )
 
     classified = classify_labels(
         collect_auto_labels(items),
@@ -978,7 +1036,8 @@ def lint_annotations(
         )
 
     data = _json.loads(files.json_filepath.read_text())
-    ranges = address_ranges_from_data(data)
+    base_regions = effective_regions_for(project_context, version_id)
+    ranges = address_ranges_from_data(data, base_regions=base_regions)
     annotations = extract_annotations(driver_filepath.read_text())
 
     unmapped = [

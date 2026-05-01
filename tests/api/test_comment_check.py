@@ -269,7 +269,7 @@ class TestFindChains:
 
 
 class TestBuildKnownAddrs:
-    def test_includes_items_subroutines_and_hardware_ranges(self) -> None:
+    def test_includes_items_subs_externals_constants(self) -> None:
         data = {
             "items": [{"addr": 0x8000}, {"addr": 0x8002}],
             "subroutines": [{"addr": 0x8000}],
@@ -281,11 +281,34 @@ class TestBuildKnownAddrs:
         assert 0x8002 in known
         assert 0xFFEE in known
         assert 0x1234 in known
-        # Zero-page range.
+
+    def test_no_implicit_bbc_ranges(self) -> None:
+        # The hardcoded BBC defaults from the sibling are gone —
+        # callers must pass `regions` explicitly.
+        data = {
+            "items": [{"addr": 0x8000}],
+            "subroutines": [],
+        }
+        known = build_known_addrs(data)
+        assert 0x0050 not in known
+        assert 0xFC00 not in known
+
+    def test_regions_explicitly_extend_known_set(self) -> None:
+        data = {
+            "items": [{"addr": 0x8000}],
+            "subroutines": [],
+        }
+        regions = [
+            (0x0000, 0x03FF),  # zero page + OS workspace
+            (0xFC00, 0xFFFF),  # hardware
+        ]
+        known = build_known_addrs(data, regions=regions)
         assert 0x0050 in known
-        # Hardware (FRED/JIM/SHEILA) range.
         assert 0xFC00 in known
-        assert 0xFFFE in known
+        assert 0xFFFF in known
+        # The end is inclusive.
+        assert 0x03FF in known
+        assert 0x0400 not in known
 
 
 # --- run_checks (integration) -------------------------------------
@@ -328,6 +351,30 @@ class TestRunChecks:
         }
         findings = run_checks(data)
         assert findings == []
+
+    def test_stale_addr_uses_regions_for_known_set(self) -> None:
+        # &FFEE is inside the [0xFC00, 0xFFFF] hardware range; with
+        # that region passed in, no stale finding. Without it, &FFEE
+        # is treated as unknown.
+        data = {
+            "items": [
+                {
+                    "addr": 0x8000,
+                    "type": "code",
+                    "mnemonic": "lda",
+                    "operand": "#0",
+                    "comment_inline": "calls &FFEE",
+                }
+            ],
+            "subroutines": [],
+        }
+        with_region = run_checks(
+            data, regions=[(0xFC00, 0xFFFF)]
+        )
+        without_region = run_checks(data)
+        # No finding when region present; stale-addr finding when not.
+        assert not any(f["check"] == "stale_addr" for f in with_region)
+        assert any(f["check"] == "stale_addr" for f in without_region)
 
 
 def test_module_dunder_all_resolves() -> None:

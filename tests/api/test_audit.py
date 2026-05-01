@@ -10,7 +10,6 @@ import pytest
 from fantasm.api import audit
 from fantasm.api.audit import (
     ALL_FLAGS,
-    BASE_MEMORY_REGIONS,
     BRANCH_MNEMONICS,
     TERMINATING_MNEMONICS,
     build_memory_regions,
@@ -22,6 +21,18 @@ from fantasm.api.audit import (
     region_for_addr,
     scan_routine_range,
 )
+
+
+# Realistic sample base regions (the BBC zero-page and NMI workspace
+# from NFS). Used in tests that exercise sub-extent computation
+# across non-ROM regions.
+SAMPLE_BASE_REGIONS = [
+    (0x0016, 0x0076),
+    (0x0400, 0x04FF),
+    (0x0500, 0x05FF),
+    (0x0600, 0x06FF),
+    (0x0D00, 0x0DFF),
+]
 
 
 # --- Constants ------------------------------------------------------
@@ -41,22 +52,20 @@ class TestConstants:
         assert "NO_REFS" in ALL_FLAGS
         assert "AUTO_NAME" in ALL_FLAGS
 
-    def test_base_memory_regions_are_sorted_and_disjoint(self) -> None:
-        # Sanity check: regions don't overlap.
-        for (s1, e1), (s2, e2) in zip(
-            BASE_MEMORY_REGIONS, BASE_MEMORY_REGIONS[1:]
-        ):
-            assert e1 < s2
-
 
 # --- build_memory_regions -------------------------------------------
 
 
 class TestBuildMemoryRegions:
-    def test_appends_rom_region(self) -> None:
+    def test_rom_only_default(self) -> None:
+        # No base regions: just the ROM range from meta.
         meta = {"load_addr": 0x8000, "end_addr": 0xA000}
-        regions = build_memory_regions(meta)
-        assert regions[:-1] == BASE_MEMORY_REGIONS
+        assert build_memory_regions(meta) == [(0x8000, 0x9FFF)]
+
+    def test_appends_rom_region_to_base(self) -> None:
+        meta = {"load_addr": 0x8000, "end_addr": 0xA000}
+        regions = build_memory_regions(meta, SAMPLE_BASE_REGIONS)
+        assert regions[:-1] == SAMPLE_BASE_REGIONS
         assert regions[-1] == (0x8000, 0x9FFF)
 
     def test_missing_meta_raises(self) -> None:
@@ -69,8 +78,11 @@ class TestBuildMemoryRegions:
 
 class TestRegionForAddr:
     def setup_method(self) -> None:
+        # Use the BBC base regions + ROM range to exercise both
+        # workspace and ROM lookups.
         self.regions = build_memory_regions(
-            {"load_addr": 0x8000, "end_addr": 0xA000}
+            {"load_addr": 0x8000, "end_addr": 0xA000},
+            SAMPLE_BASE_REGIONS,
         )
 
     @pytest.mark.parametrize(

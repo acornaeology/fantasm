@@ -11,14 +11,15 @@ the sibling code are intentionally not yet ported — they print
 directly to stdout, which is a CLI concern. They will land alongside
 the ``fantasm audit`` Click sub-command.
 
-Notes on values that look project-specific but are not:
+Region awareness is project-aware: callers pass a version's
+``memory_regions`` (typically derived from
+:func:`fantasm.api.version_graph.VersionGraph.effective_regions` plus
+the ROM range from JSON metadata). When omitted, the default is the
+ROM range alone — sub extents are bounded by ROM only. The earlier
+hardcoded BBC ranges that the sibling code carried have been removed.
 
-- :data:`BASE_MEMORY_REGIONS` lists workspace regions inside the
-  zero page and main RAM. Identical across the four sibling
-  projects today; a future :file:`fantasm.toml` schema may make this
-  configurable per project.
-- :data:`TERMINATING_MNEMONICS` and :data:`BRANCH_MNEMONICS` are
-  6502 facts.
+:data:`TERMINATING_MNEMONICS` and :data:`BRANCH_MNEMONICS` are 6502
+facts and stay as constants here.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 
@@ -37,17 +38,6 @@ TERMINATING_MNEMONICS = frozenset({"rts", "jmp", "brk", "rti"})
 BRANCH_MNEMONICS = frozenset(
     {"bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs"}
 )
-
-# Memory regions: subroutines only extend within their region. The
-# ROM region is added dynamically by build_memory_regions() based on
-# JSON metadata.
-BASE_MEMORY_REGIONS: list[tuple[int, int]] = [
-    (0x0016, 0x0076),  # zero page workspace
-    (0x0400, 0x04FF),  # relocated page 4
-    (0x0500, 0x05FF),  # relocated page 5
-    (0x0600, 0x06FF),  # relocated page 6
-    (0x0D00, 0x0DFF),  # NMI workspace
-]
 
 ALL_FLAGS: tuple[str, ...] = (
     "FALL_THROUGH",
@@ -60,16 +50,25 @@ ALL_FLAGS: tuple[str, ...] = (
 )
 
 
-def build_memory_regions(meta: dict) -> list[tuple[int, int]]:
-    """Build the full memory-region list from JSON metadata.
+def build_memory_regions(
+    meta: dict,
+    base_regions: Iterable[tuple[int, int]] = (),
+) -> list[tuple[int, int]]:
+    """Build the full memory-region list for a single version.
 
-    Appends the ROM region (``meta["load_addr"]`` to ``meta["end_addr"] - 1``)
-    onto :data:`BASE_MEMORY_REGIONS`. Raises ``KeyError`` if either
-    metadata key is missing.
+    Appends the ROM region (``meta["load_addr"]`` to
+    ``meta["end_addr"] - 1``) onto ``base_regions``. ``base_regions``
+    typically comes from
+    :meth:`fantasm.api.version_graph.VersionGraph.effective_regions`,
+    converted from :class:`Region` dataclasses to ``(start, end)``
+    tuples. Defaults to empty — ROM-only.
+
+    Raises ``KeyError`` if ``load_addr`` or ``end_addr`` are missing
+    from ``meta``.
     """
     load_addr = meta["load_addr"]
     end_addr = meta["end_addr"] - 1
-    return BASE_MEMORY_REGIONS + [(load_addr, end_addr)]
+    return list(base_regions) + [(load_addr, end_addr)]
 
 
 def region_for_addr(
@@ -130,7 +129,11 @@ def scan_routine_range(
     return None, code_count, data_count, True
 
 
-def load_subroutines(json_filepath: str | Path) -> list[dict]:
+def load_subroutines(
+    json_filepath: str | Path,
+    *,
+    memory_regions: Iterable[tuple[int, int]] | None = None,
+) -> list[dict]:
     """Load JSON output and compute per-subroutine extents and flags.
 
     Returns a list of subroutine dicts augmented with: ``items``,
@@ -138,11 +141,20 @@ def load_subroutines(json_filepath: str | Path) -> list[dict]:
     ``next_sub``, ``entry_refs``, ``branch_entry_refs``,
     ``escaping_branches``, ``flags``. The ``flags`` entry is a set of
     strings drawn from :data:`ALL_FLAGS`.
+
+    ``memory_regions`` constrains where subroutine extents may run.
+    The list should already include both the ROM range and any
+    workspace regions where small subs may live. If omitted, it
+    defaults to the ROM range alone (derived from the JSON's
+    ``meta``) — sub extents are then bounded by ROM only.
     """
     data = json.loads(Path(json_filepath).read_text())
     items = data["items"]
     raw_subs = data.get("subroutines", [])
-    memory_regions = build_memory_regions(data.get("meta", {}))
+    if memory_regions is None:
+        memory_regions = build_memory_regions(data.get("meta", {}))
+    else:
+        memory_regions = list(memory_regions)
 
     rom_subs = [s for s in raw_subs if s["addr"] < 0xFF00]
     rom_subs.sort(key=lambda s: s["addr"])
@@ -461,7 +473,6 @@ def find_undeclared_subs(json_filepath: str | Path) -> list[dict]:
 
 __all__ = [
     "ALL_FLAGS",
-    "BASE_MEMORY_REGIONS",
     "BRANCH_MNEMONICS",
     "TERMINATING_MNEMONICS",
     "build_memory_regions",

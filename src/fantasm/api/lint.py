@@ -153,6 +153,7 @@ def valid_addresses_from_data(data: dict) -> set[int]:
 def address_ranges_from_data(
     data: dict,
     *,
+    base_regions: Iterable[tuple[int, int]] = (),
     rom_base_default: int = 0x8000,
     rom_size_default: int = 0x2000,
     block_padding: int = 32,
@@ -161,27 +162,32 @@ def address_ranges_from_data(
 ) -> list[tuple[int, int]]:
     """Build address ranges covered by the disassembly.
 
-    Returns ``(start, end)`` inclusive tuples. The full ROM range is
-    always included; relocated-code addresses outside the ROM range
-    are grouped into contiguous blocks (gaps larger than
-    ``block_gap_threshold`` start a new block) and padded out by
-    ``block_padding`` to cover data tails within relocated blocks.
+    Returns ``(start, end)`` inclusive tuples. Components, in order:
 
-    The defaults match the BBC sideways-ROM 8K convention; pass
-    different ``rom_base_default`` / ``rom_size_default`` for projects
-    with different bank sizes (16K ADFS, 32K-bank carts, etc.).
-    External labels are intentionally excluded — they name operand
-    targets (workspace variables) but don't produce assembly items
-    that the website's anchors can target.
+    - ``base_regions`` (workspace + hardware/OS regions, typically
+      derived from
+      :meth:`~fantasm.api.version_graph.VersionGraph.effective_regions`
+      ∪ :meth:`~fantasm.api.version_graph.VersionGraph.effective_external_regions`);
+    - the full ROM range from JSON metadata;
+    - relocated-code clusters: addresses outside the ROM range are
+      grouped into contiguous blocks (gaps larger than
+      ``block_gap_threshold`` start a new block) and padded out by
+      ``block_padding`` to cover data tails within relocated blocks.
+
+    ``rom_base_default`` / ``rom_size_default`` are fallbacks for
+    when the JSON metadata lacks ``load_addr`` / ``end_addr`` (BBC
+    8K sideways-ROM defaults; pass different values for 16K ADFS,
+    32K-bank carts, etc.).
     """
     item_addrs = sorted(item["addr"] for item in data["items"])
     if not item_addrs:
-        return []
+        return list(base_regions)
 
     meta = data.get("meta", {})
     load_addr = meta.get("load_addr", rom_base_default)
     end_addr = meta.get("end_addr", load_addr + rom_size_default)
-    ranges: list[tuple[int, int]] = [(load_addr, end_addr - 1)]
+    ranges: list[tuple[int, int]] = list(base_regions)
+    ranges.append((load_addr, end_addr - 1))
 
     extra: set[int] = set()
     for addr in item_addrs:
@@ -269,12 +275,14 @@ def load_valid_addresses(json_filepath: str | Path) -> set[int]:
 def load_address_ranges(
     json_filepath: str | Path,
     *,
+    base_regions: Iterable[tuple[int, int]] = (),
     rom_base_default: int = 0x8000,
     rom_size_default: int = 0x2000,
 ) -> list[tuple[int, int]]:
     """File-IO wrapper around :func:`address_ranges_from_data`."""
     return address_ranges_from_data(
         json.loads(Path(json_filepath).read_text()),
+        base_regions=base_regions,
         rom_base_default=rom_base_default,
         rom_size_default=rom_size_default,
     )

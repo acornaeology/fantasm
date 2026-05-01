@@ -18,6 +18,11 @@ from .api.paths import (
     project_versions_dirpath,
     resolve_version_dirpath,
 )
+from .api.version_graph import (
+    VersionGraphError,
+    VersionNotInGraphError,
+    load_version_graph,
+)
 from .config import ProjectContext
 
 
@@ -103,4 +108,36 @@ def resolve_version_files(
     )
 
 
-__all__ = ["VersionFiles", "require_project", "resolve_version_files"]
+def effective_regions_for(
+    project_context: ProjectContext, version_id: str
+) -> list[tuple[int, int]]:
+    """Return the project-graph's effective regions for ``version_id``.
+
+    Combines the version's ``effective_regions`` (workspace) with
+    ``effective_external_regions`` (hardware / OS) and converts the
+    :class:`Region` dataclasses to ``(start, end)`` tuples, the
+    format the audit / lint / comment_check api modules consume.
+
+    Returns ``[]`` when there's no version graph at all, when the
+    graph is empty, or when ``version_id`` isn't declared in it.
+    Commands that observe the empty result fall back to ROM-only
+    region awareness — which is the right behaviour for projects
+    that don't use the version-graph features yet.
+    """
+    try:
+        graph = load_version_graph(project_context)
+    except VersionGraphError:
+        return []
+    if version_id not in graph:
+        return []
+    regions = graph.effective_regions(version_id)
+    external = graph.effective_external_regions(version_id)
+    return [(r.start, r.end) for r in regions + external]
+
+
+__all__ = [
+    "VersionFiles",
+    "effective_regions_for",
+    "require_project",
+    "resolve_version_files",
+]

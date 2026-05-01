@@ -432,16 +432,26 @@ def check_chain_comments(
     return findings
 
 
-def build_known_addrs(data: dict) -> set[int]:
-    """Build the set of all addresses considered "known" for stale-addr checks.
+def build_known_addrs(
+    data: dict,
+    *,
+    regions: Iterable[tuple[int, int]] = (),
+) -> set[int]:
+    """Build the set of "known" addresses for stale-addr checks.
 
     Combines item addresses, subroutine addresses, external labels,
-    and constants, plus the conventional BBC zero page / OS workspace
-    / hardware ranges that don't appear in disassembly output.
+    and constants from ``data``, plus every address inside
+    ``regions``. ``regions`` is ``(start, end)`` inclusive tuples,
+    typically the union of
+    :meth:`~fantasm.api.version_graph.VersionGraph.effective_regions`
+    and
+    :meth:`~fantasm.api.version_graph.VersionGraph.effective_external_regions`
+    for the version being checked. Defaults to empty — only addresses
+    that appear in the JSON output count as known.
 
-    These ranges are currently hardcoded to the BBC Acorn family
-    (sibling forks were byte-identical here). A future fantasm.toml
-    schema may make them per-project configurable.
+    The hardcoded BBC zero-page / OS / hardware ranges that the
+    sibling code carried have been removed; pass them via ``regions``
+    instead.
     """
     known: set[int] = set()
     for item in data["items"]:
@@ -452,30 +462,32 @@ def build_known_addrs(data: dict) -> set[int]:
         known.add(addr)
     for const in data.get("constants", []):
         known.add(const["value"])
-    # Zero page, stack, OS workspace, vectors.
-    known.update(range(0x0000, 0x0400))
-    # Relocated code pages.
-    known.update(range(0x0400, 0x0800))
-    # NFS-style workspace pages 0x0D-0x10.
-    known.update(range(0x0D00, 0x1100))
-    # SHEILA, Tube, FRED, JIM, MOS.
-    known.update(range(0xFC00, 0x10000))
+    for start, end in regions:
+        known.update(range(start, end + 1))
     return known
 
 
-def run_checks(data: dict, sub_target: str | None = None) -> list[dict]:
+def run_checks(
+    data: dict,
+    sub_target: str | None = None,
+    *,
+    regions: Iterable[tuple[int, int]] = (),
+) -> list[dict]:
     """Run every check against ``data`` and return a flat list of findings.
 
     ``sub_target``, if given, restricts checks to the subroutine
     starting at that hex address. Raises :class:`ValueError` for an
-    invalid address (was a stderr print + early-return in the sibling
-    code).
+    invalid address.
+
+    ``regions`` extends the "known address" set used by stale-addr
+    checks; see :func:`build_known_addrs`. Pass the version's
+    effective + external regions for project-aware behaviour.
     """
     items = data["items"]
     items_by_addr = {item["addr"]: item for item in items}
     sorted_items = sorted(items, key=lambda i: i["addr"])
 
-    known_addrs = build_known_addrs(data)
+    known_addrs = build_known_addrs(data, regions=regions)
 
     sub_range: tuple[int, int | None] | None = None
     if sub_target:
