@@ -7,11 +7,12 @@ from pathlib import Path
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
-from ..api.backfill import compose_chained_map, diff_annotations
+from ..api.backfill import diff_annotations
 from ..api.version_graph import (
     NoPathError,
     VersionGraphError,
     VersionNotInGraphError,
+    compose_chained_map,
     load_version_graph,
 )
 from ..cli_helpers import (

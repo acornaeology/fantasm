@@ -42,7 +42,6 @@ from .backfill import (
     PropagationReport,
     build_confidence_map,
     build_confidence_map_for_block,
-    compose_chained_map,
     diff_annotations,
     group_logical_statements,
     parse_annotations,
@@ -119,6 +118,7 @@ from .version_graph import (
     VersionGraphCycleError,
     VersionGraphError,
     VersionNotInGraphError,
+    compose_chained_map,
     load_version_graph,
 )
 from .context import (

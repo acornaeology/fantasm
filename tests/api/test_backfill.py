@@ -201,14 +201,10 @@ class TestTranslateSubroutine:
         assert 'description="see 0x8000"' in out
 
 
-# --- compose_chained_map -----------------------------------------
-
-
 from fantasm.api.backfill import (
     AnnotationDiff,
     PropagationCandidate,
     PropagationReport,
-    compose_chained_map,
     diff_annotations,
     propose_propagations,
 )
@@ -217,94 +213,6 @@ from fantasm.api.version_graph import (
     Version,
     VersionGraph,
 )
-
-
-class TestComposeChainedMap:
-    def test_same_version_returns_empty(self) -> None:
-        graph = VersionGraph([Version("a", (), (), None)])
-
-        def loader(_id: str) -> bytes:
-            return b""
-
-        assert compose_chained_map(graph, "a", "a", loader) == {}
-
-    def test_single_hop_identical_roms(self) -> None:
-        # Same opcodes in both versions: every code address maps to
-        # itself with high block_length.
-        rom = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
-
-        graph = VersionGraph(
-            [
-                Version("a", (), (), None),
-                Version("b", ("a",), (), None),
-            ]
-        )
-
-        def loader(_id: str) -> bytes:
-            return rom
-
-        composed = compose_chained_map(graph, "a", "b", loader)
-        # The four code instructions land at offsets 0, 2, 3, 5 → addresses
-        # 0x8000, 0x8002, 0x8003, 0x8005 (with default rom_base).
-        assert composed[0x8000] == (0x8000, 4)
-        assert composed[0x8005] == (0x8005, 4)
-
-    def test_backward_walk_inverts(self) -> None:
-        # Walking child -> parent should invert the canonical map.
-        rom_parent = bytes([0xA9, 0x01, 0x60])
-        rom_child = bytes([0xA9, 0x02, 0x60])
-
-        graph = VersionGraph(
-            [
-                Version("parent", (), (), None),
-                Version("child", ("parent",), (), None),
-            ]
-        )
-
-        def loader(version_id: str) -> bytes:
-            return rom_parent if version_id == "parent" else rom_child
-
-        forward = compose_chained_map(graph, "parent", "child", loader)
-        backward = compose_chained_map(graph, "child", "parent", loader)
-        # 0x8000 in either rom maps to 0x8000 in the other.
-        assert forward[0x8000][0] == 0x8000
-        assert backward[0x8000][0] == 0x8000
-
-    def test_two_hop_composition_uses_min_confidence(self) -> None:
-        # Three versions in a row. Build differently-shaped roms so
-        # the per-hop block_lengths differ; the composed confidence
-        # is the minimum.
-        rom_a = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
-        rom_b = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
-        rom_c = bytes([0xA9, 0x01, 0x60, 0xA9, 0x02, 0x60])
-
-        graph = VersionGraph(
-            [
-                Version("a", (), (), None),
-                Version("b", ("a",), (), None),
-                Version("c", ("b",), (), None),
-            ]
-        )
-
-        def loader(version_id: str) -> bytes:
-            return {"a": rom_a, "b": rom_b, "c": rom_c}[version_id]
-
-        composed = compose_chained_map(graph, "a", "c", loader)
-        # All three roms identical → identity map across the whole chain.
-        assert composed[0x8000][0] == 0x8000
-
-    def test_disconnected_raises(self) -> None:
-        graph = VersionGraph(
-            [Version("a", (), (), None), Version("b", (), (), None)]
-        )
-
-        def loader(_id: str) -> bytes:
-            return b""
-
-        from fantasm.api.version_graph import NoPathError
-
-        with pytest.raises(NoPathError):
-            compose_chained_map(graph, "a", "b", loader)
 
 
 # --- propose_propagations ----------------------------------------

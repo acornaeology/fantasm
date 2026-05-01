@@ -30,7 +30,7 @@ relevant TOML:
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -463,6 +463,98 @@ def load_version_graph(project_context: "ProjectContext") -> VersionGraph:
     )
 
 
+# --- Chain composition --------------------------------------------
+
+
+def compose_chained_map(
+    graph: VersionGraph,
+    source_id: str,
+    target_id: str,
+    rom_loader: Callable[[str], bytes],
+    *,
+    rom_base: int = 0x8000,
+    cpu: str = "6502",
+    workspace_ranges: Iterable[tuple[int, int]] = ((0x0000, 0x0100),),
+    high_confidence: int = 1000,
+) -> dict[int, tuple[int, int]]:
+    """Compose a confidence map from ``source_id`` to ``target_id``.
+
+    Walks the shortest path through ``graph`` between the two
+    versions, builds a per-hop confidence map for each edge using
+    ROM bytes obtained from ``rom_loader``, and composes them
+    end-to-end with min-confidence (weakest link).
+
+    Per-hop maps are always built canonically (parent → child) and
+    inverted on the fly when the path traverses an edge backward,
+    so the chain composition is direction-aware.
+
+    Returns ``{source_addr: (target_addr, confidence)}`` covering
+    addresses where a path exists; addresses that don't compose
+    through every hop are simply absent. Same-version returns ``{}``.
+    """
+    # Deferred to break the circular import: ``backfill`` imports the
+    # graph types at module top, so this function imports its
+    # per-hop map builder from there only when called.
+    from .backfill import build_confidence_map
+
+    path = graph.find_path(source_id, target_id)
+    if not path:
+        return {}
+
+    composed: dict[int, tuple[int, int]] = {}
+    current_id = source_id
+
+    for edge in path:
+        if edge.walked_forward:
+            assert current_id == edge.parent_id
+            next_id = edge.child_id
+        else:
+            assert current_id == edge.child_id
+            next_id = edge.parent_id
+
+        rom_parent = rom_loader(edge.parent_id)
+        rom_child = rom_loader(edge.child_id)
+        reloc_pairs = graph.reloc_pairs_for_edge(edge)
+        canonical_map = build_confidence_map(
+            rom_parent,
+            rom_child,
+            reloc_pairs,
+            rom_base=rom_base,
+            cpu=cpu,
+            workspace_ranges=workspace_ranges,
+            high_confidence=high_confidence,
+        )
+
+        if edge.walked_forward:
+            hop_map = canonical_map
+        else:
+            inverted: dict[int, tuple[int, int]] = {}
+            for parent_addr, (child_addr, conf) in canonical_map.items():
+                # Multiple parent addrs can map to one child addr; keep
+                # the highest-confidence preimage.
+                existing = inverted.get(child_addr)
+                if existing is None or conf > existing[1]:
+                    inverted[child_addr] = (parent_addr, conf)
+            hop_map = inverted
+
+        if not composed:
+            composed = hop_map
+        else:
+            next_composed: dict[int, tuple[int, int]] = {}
+            for src_addr, (mid_addr, mid_conf) in composed.items():
+                if mid_addr in hop_map:
+                    next_addr, hop_conf = hop_map[mid_addr]
+                    next_composed[src_addr] = (
+                        next_addr,
+                        min(mid_conf, hop_conf),
+                    )
+            composed = next_composed
+
+        current_id = next_id
+
+    return composed
+
+
 __all__ = [
     "Edge",
     "NoPathError",
@@ -473,5 +565,6 @@ __all__ = [
     "VersionGraphCycleError",
     "VersionGraphError",
     "VersionNotInGraphError",
+    "compose_chained_map",
     "load_version_graph",
 ]
