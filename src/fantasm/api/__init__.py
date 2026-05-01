@@ -12,4 +12,22 @@ The flat re-exports are populated as topics are ported in from the sibling
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from .mos6502 import (
+    OPCODE_LENGTHS,
+    OPCODE_LENGTHS_65C02,
+    OPCODE_MNEMONICS,
+    OPCODE_MNEMONICS_65C02,
+    instruction_length,
+    mnemonic,
+    opcode_tables,
+)
+
+__all__ = [
+    "OPCODE_LENGTHS",
+    "OPCODE_LENGTHS_65C02",
+    "OPCODE_MNEMONICS",
+    "OPCODE_MNEMONICS_65C02",
+    "instruction_length",
+    "mnemonic",
+    "opcode_tables",
+]
