@@ -1,17 +1,25 @@
 """Shared helpers for fantasm CLI commands.
 
-Per-version file resolution and a thin error-translation wrapper that
-maps the api's typed exceptions to ``click.UsageError`` so the user
-sees a clean message rather than a Python traceback.
+Per-version file resolution, project-config readers, and an
+``AnalysisContext`` that lazily loads the recurring JSON-data /
+memory-regions / subroutines / call-graph / asm-lines bundle so
+commands don't have to keep repeating the boilerplate.
+
+Errors from the api layer are translated to ``click.UsageError`` so
+the user sees a clean message rather than a Python traceback.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
+from typing import Any
 
 import click
 
+from .api.audit import build_memory_regions, load_subroutines
 from .api.paths import (
     VersionNotFoundError,
     project_driver_dirname,
@@ -169,8 +177,101 @@ def effective_regions_for(
     return [(r.start, r.end) for r in regions + external]
 
 
+# --- AnalysisContext ----------------------------------------------
+
+
+@dataclass
+class AnalysisContext:
+    """Lazy-loaded per-version analysis data for CLI commands.
+
+    Wraps the recurring "resolve files → load JSON → build memory
+    regions → load subroutines / call graph / asm lines" sequence
+    behind cached properties. Commands ask for only what they need;
+    the file IO + parsing happens once per attribute on first
+    access.
+
+    Use :func:`analysis_context` to construct one from a Click
+    context plus a version id.
+    """
+
+    project: ProjectContext
+    version_id: str
+    files: VersionFiles
+
+    @cached_property
+    def data(self) -> dict:
+        """Parsed JSON disassembly output for this version.
+
+        Raises ``click.UsageError`` if the JSON file is missing.
+        """
+        if not self.files.json_filepath.exists():
+            raise click.UsageError(
+                f"JSON not found: {self.files.json_filepath} "
+                "(run disassemble first)"
+            )
+        return json.loads(self.files.json_filepath.read_text())
+
+    @cached_property
+    def base_regions(self) -> list[tuple[int, int]]:
+        """Workspace + external regions for this version, from the graph."""
+        return effective_regions_for(self.project, self.version_id)
+
+    @cached_property
+    def memory_regions(self) -> list[tuple[int, int]]:
+        """Full memory regions: base regions ∪ ROM range from JSON metadata."""
+        return build_memory_regions(
+            self.data["meta"], base_regions=self.base_regions
+        )
+
+    @cached_property
+    def audit_subs(self) -> list[dict]:
+        """Subroutines loaded with project-aware memory regions."""
+        return load_subroutines(
+            self.files.json_filepath,
+            memory_regions=self.memory_regions,
+        )
+
+    @cached_property
+    def call_graph(self) -> Any:
+        """Inter-procedural call graph (networkx DiGraph)."""
+        # Imported here to avoid a top-level networkx dep on this
+        # module when callers only need data/audit_subs/asm_lines.
+        from .api.cfg import build_call_graph
+
+        return build_call_graph(
+            self.files.json_filepath,
+            memory_regions=self.memory_regions,
+        )
+
+    @cached_property
+    def asm_lines(self) -> list[str]:
+        """Assembly file lines (with line endings preserved).
+
+        Raises ``click.UsageError`` if the ASM file is missing.
+        """
+        if not self.files.asm_filepath.exists():
+            raise click.UsageError(
+                f"ASM not found: {self.files.asm_filepath} "
+                "(run disassemble first)"
+            )
+        return self.files.asm_filepath.read_text().splitlines(keepends=True)
+
+
+def analysis_context(
+    ctx: click.Context, version_id: str
+) -> AnalysisContext:
+    """Construct an :class:`AnalysisContext` from a Click context."""
+    project = require_project(ctx)
+    files = resolve_version_files(project, version_id)
+    return AnalysisContext(
+        project=project, version_id=version_id, files=files
+    )
+
+
 __all__ = [
+    "AnalysisContext",
     "VersionFiles",
+    "analysis_context",
     "effective_regions_for",
     "project_cpu",
     "project_rom_base",
