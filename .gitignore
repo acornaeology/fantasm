@@ -39,6 +39,9 @@ ENV/
 
 # uv
 .uv/
+# Fantasm is a library as much as an application; consumers resolve
+# their own dependency versions, so uv.lock stays out of git.
+uv.lock
 
 # Environments / secrets
 .env
