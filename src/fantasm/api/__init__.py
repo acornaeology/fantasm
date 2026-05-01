@@ -55,6 +55,17 @@ from .project import (
 )
 from .verify import BeebasmNotFoundError, VerifyResult, verify_round_trip
 from .context import compute_call_depths
+from .lint import (
+    address_in_ranges,
+    address_ranges_from_data,
+    extract_annotations,
+    find_code_block_ranges,
+    find_nth_occurrence,
+    load_address_ranges,
+    load_valid_addresses,
+    offset_in_code_block,
+    valid_addresses_from_data,
+)
 from .insert_point import (
     AlreadyDeclared,
     InsertPoint,
