@@ -108,7 +108,13 @@ from .version_graph import (
     VersionNotInGraphError,
     load_version_graph,
 )
-from .context import compute_call_depths
+from .context import (
+    CallSiteContext,
+    ExitPointContext,
+    SubContext,
+    compute_call_depths,
+    extract_sub_context,
+)
 from .lint import (
     address_in_ranges,
     address_ranges_from_data,

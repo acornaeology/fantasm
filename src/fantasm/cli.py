@@ -25,7 +25,7 @@ from .api.audit import build_memory_regions
 from .api.cfg import build_call_graph, resolve_sub_node
 from .api.comment_check import run_checks
 from .api.compare import compare_roms
-from .api.context import compute_call_depths
+from .api.context import compute_call_depths, extract_sub_context
 from .api.find_shared import (
     find_matching_spans,
     load_rom,
@@ -779,6 +779,179 @@ def cfg_sub(version_id: str, target: str) -> Reports:
                 "out",
             )
         ),
+    )
+
+
+@cfg.command(
+    "sub-context",
+    help=(
+        "Show calling-convention context for one subroutine: body "
+        "lines, every call site with surrounding context, and every "
+        "exit point. Complements `cfg sub`, which shows the call "
+        "graph view."
+    ),
+)
+@click.argument("version_id")
+@click.argument("target")
+@click.option(
+    "--body-window",
+    type=click.IntRange(1, 500),
+    default=20,
+    show_default=True,
+    help="Lines of body to show.",
+)
+@click.option(
+    "--caller-context",
+    type=click.IntRange(0, 50),
+    default=3,
+    show_default=True,
+    help="Lines before each call site.",
+)
+@click.option(
+    "--after-context",
+    type=click.IntRange(0, 50),
+    default=2,
+    show_default=True,
+    help="Lines after each call site.",
+)
+@click.option(
+    "--exit-context",
+    type=click.IntRange(0, 50),
+    default=3,
+    show_default=True,
+    help="Lines before each exit instruction.",
+)
+@report_output(reports={
+    "info": "Subroutine summary",
+    "body": "Body lines",
+    "call_sites": "Call sites with surrounding context",
+    "exits": "Exit instructions with surrounding context",
+})
+def cfg_sub_context(
+    version_id: str,
+    target: str,
+    body_window: int,
+    caller_context: int,
+    after_context: int,
+    exit_context: int,
+) -> Reports:
+    import json as _json
+
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+    if not files.asm_filepath.exists():
+        raise click.UsageError(
+            f"ASM not found: {files.asm_filepath}"
+        )
+
+    base_regions = effective_regions_for(project_context, version_id)
+    data = _json.loads(files.json_filepath.read_text())
+    memory_regions = build_memory_regions(
+        data["meta"], base_regions=base_regions
+    )
+    audit_subs = load_subroutines(
+        files.json_filepath, memory_regions=memory_regions
+    )
+    sub = find_sub(audit_subs, target)
+    if sub is None:
+        raise click.UsageError(
+            f"subroutine {target!r} not found in {version_id}"
+        )
+
+    if base_regions:
+        graph = build_call_graph(
+            files.json_filepath, memory_regions=memory_regions
+        )
+    else:
+        graph = build_call_graph(files.json_filepath)
+
+    asm_lines = files.asm_filepath.read_text().splitlines(keepends=True)
+    sub_context = extract_sub_context(
+        sub, asm_lines, graph,
+        body_window=body_window,
+        caller_context=caller_context,
+        after_context=after_context,
+        exit_context=exit_context,
+    )
+
+    info = (
+        TableContent(
+            title=f"{sub_context.name} (&{sub_context.addr:04X})",
+            description=sub_context.title or "(no title)",
+        )
+        .add_column("key", "Key")
+        .add_column("value", "Value")
+        .add_row(key="address", value=f"&{sub_context.addr:04X}")
+        .add_row(key="name", value=sub_context.name)
+        .add_row(key="title", value=sub_context.title or "")
+        .add_row(key="call_sites", value=str(len(sub_context.call_sites)))
+        .add_row(key="exit_points", value=str(len(sub_context.exit_points)))
+        .add_row(key="body_lines", value=str(len(sub_context.body_lines)))
+    )
+
+    body_table = (
+        TableContent(title=f"{sub_context.name} body")
+        .add_column("line", "Line")
+        .add_column("text", "Source")
+    )
+    for offset, text in enumerate(sub_context.body_lines):
+        body_table.add_row(
+            line=str(sub_context.body_start_line + offset + 1),
+            text=text.rstrip("\n"),
+        )
+
+    call_table = (
+        TableContent(
+            title=f"{sub_context.name} call sites",
+            description=f"{len(sub_context.call_sites)} site(s)",
+        )
+        .add_column("site", "Site")
+        .add_column("from", "From sub")
+        .add_column("addr", "Addr")
+        .add_column("op", "Op")
+        .add_column("text", "Source")
+    )
+    for site_index, site in enumerate(sub_context.call_sites, start=1):
+        for line_offset, text in enumerate(site.asm_lines):
+            marker = ">>>" if line_offset == site.call_line_index else ""
+            call_table.add_row(
+                site=f"{site_index}/{len(sub_context.call_sites)}",
+                **{"from": site.in_sub_name or "?"},
+                addr=f"&{site.addr:04X}",
+                op=site.mnemonic.upper(),
+                text=f"{marker} {text.rstrip()}".strip(),
+            )
+
+    exit_table = (
+        TableContent(
+            title=f"{sub_context.name} exits",
+            description=f"{len(sub_context.exit_points)} exit(s)",
+        )
+        .add_column("exit", "Exit")
+        .add_column("addr", "Addr")
+        .add_column("op", "Op")
+        .add_column("text", "Source")
+    )
+    for exit_index, exit_point in enumerate(sub_context.exit_points, start=1):
+        for line_offset, text in enumerate(exit_point.asm_lines):
+            marker = ">>>" if line_offset == exit_point.exit_line_index else ""
+            exit_table.add_row(
+                exit=f"{exit_index}/{len(sub_context.exit_points)}",
+                addr=f"&{exit_point.addr:04X}",
+                op=exit_point.mnemonic.upper(),
+                text=f"{marker} {text.rstrip()}".strip(),
+            )
+
+    return Reports(
+        info=Report(data=info),
+        body=Report(data=body_table),
+        call_sites=Report(data=call_table),
+        exits=Report(data=exit_table),
     )
 
 

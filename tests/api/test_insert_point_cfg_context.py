@@ -9,7 +9,13 @@ import networkx as nx
 import pytest
 
 from fantasm.api.cfg import build_call_graph, resolve_sub_node
-from fantasm.api.context import compute_call_depths
+from fantasm.api.context import (
+    CallSiteContext,
+    ExitPointContext,
+    SubContext,
+    compute_call_depths,
+    extract_sub_context,
+)
 from fantasm.api.insert_point import (
     AlreadyDeclared,
     compute_insert_point,
@@ -213,3 +219,97 @@ class TestComputeCallDepths:
         depths = compute_call_depths(graph)
         # Both nodes share the same depth from SCC condensation.
         assert depths["a"] == depths["b"]
+
+
+# --- extract_sub_context -----------------------------------------
+
+
+SUB_CONTEXT_ASM = [
+    "; header\n",
+    ".main\n",
+    "    LDA #$00       ;8000:\n",
+    "    JSR helper     ;8002:\n",
+    "    NOP            ;8005:\n",
+    "    RTS            ;8006:\n",
+    "\n",
+    ".helper\n",
+    "    LDX #$10       ;8010:\n",
+    "    DEX            ;8012:\n",
+    "    BNE :8012[1]   ;8013:\n",
+    "    RTS            ;8015:\n",
+]
+
+SUB_CONTEXT_HELPER_SUB = {
+    "addr": 0x8010,
+    "name": "helper",
+    "title": "Helper routine",
+    "items": [
+        {"addr": 0x8010, "type": "code", "mnemonic": "ldx"},
+        {"addr": 0x8012, "type": "code", "mnemonic": "dex"},
+        {"addr": 0x8013, "type": "code", "mnemonic": "bne", "target": 0x8012},
+        {"addr": 0x8015, "type": "code", "mnemonic": "rts"},
+    ],
+    "next_sub": None,
+}
+
+
+def _call_graph_with_main_calling_helper() -> nx.DiGraph:
+    graph: nx.DiGraph = nx.DiGraph()
+    graph.add_node("0x8000", name="main", external=False)
+    graph.add_node("0x8010", name="helper", external=False)
+    graph.add_edge(
+        "0x8000", "0x8010", call_sites=["0x8002"], type="jsr"
+    )
+    return graph
+
+
+class TestExtractSubContext:
+    def test_body_lines(self) -> None:
+        sub_context = extract_sub_context(
+            SUB_CONTEXT_HELPER_SUB,
+            SUB_CONTEXT_ASM,
+            _call_graph_with_main_calling_helper(),
+            body_window=4,
+        )
+        assert sub_context.name == "helper"
+        assert sub_context.addr == 0x8010
+        # Body starts at the .helper line.
+        body_text = "".join(sub_context.body_lines)
+        assert "LDX" in body_text
+
+    def test_call_sites_from_graph(self) -> None:
+        sub_context = extract_sub_context(
+            SUB_CONTEXT_HELPER_SUB,
+            SUB_CONTEXT_ASM,
+            _call_graph_with_main_calling_helper(),
+        )
+        assert len(sub_context.call_sites) == 1
+        site = sub_context.call_sites[0]
+        assert site.addr == 0x8002
+        assert site.mnemonic == "jsr"
+        assert site.in_sub_name == "main"
+        # Window includes the JSR line.
+        assert any("JSR helper" in line for line in site.asm_lines)
+
+    def test_exit_points(self) -> None:
+        sub_context = extract_sub_context(
+            SUB_CONTEXT_HELPER_SUB,
+            SUB_CONTEXT_ASM,
+            _call_graph_with_main_calling_helper(),
+        )
+        assert len(sub_context.exit_points) == 1
+        exit_point = sub_context.exit_points[0]
+        assert exit_point.addr == 0x8015
+        assert exit_point.mnemonic == "rts"
+        # Exit context backs up before the RTS.
+        assert any("RTS" in line for line in exit_point.asm_lines)
+
+    def test_no_callers(self) -> None:
+        # An isolated sub with no callers should produce empty
+        # call_sites without erroring.
+        graph: nx.DiGraph = nx.DiGraph()
+        graph.add_node("0x8010", name="helper", external=False)
+        sub_context = extract_sub_context(
+            SUB_CONTEXT_HELPER_SUB, SUB_CONTEXT_ASM, graph
+        )
+        assert sub_context.call_sites == ()
