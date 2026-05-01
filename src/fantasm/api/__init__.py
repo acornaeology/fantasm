@@ -35,6 +35,14 @@ from .rename_labels import (
     find_rename_section,
     parse_label_declarations,
 )
+from .project import (
+    ProjectInitConfig,
+    VersionInfo,
+    add_version,
+    init_project,
+    list_versions,
+    render_fantasm_toml,
+)
 from .verify import BeebasmNotFoundError, VerifyResult, verify_round_trip
 from .context import compute_call_depths
 from .insert_point import (

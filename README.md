@@ -36,7 +36,8 @@ Options:
   -h, --help                Show this message and exit.
 
 Commands:
-  info  Show the resolved project context.
+  info     Show the resolved project context.
+  project  Initialise and manage fantasm projects.
 ```
 
 The top-level `fantasm` command accepts a `--project-root` option and
