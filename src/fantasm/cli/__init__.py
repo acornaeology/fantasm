@@ -17,6 +17,7 @@ from .cfg import cfg
 from .comments import comments
 from .compare import compare
 from .context import context
+from .disassemble import disassemble
 from .fingerprint import fingerprint_cmd
 from .labels import labels
 from .lint import lint_annotations
@@ -37,6 +38,7 @@ for _cmd in (
     comments,
     compare,
     context,
+    disassemble,
     fingerprint_cmd,
     labels,
     lint_annotations,
