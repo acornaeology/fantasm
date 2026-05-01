@@ -8,6 +8,7 @@ import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from . import __version__
+from .api.asm_extract import extract_section
 from .api.audit import (
     ALL_FLAGS,
     end_type,
@@ -15,8 +16,16 @@ from .api.audit import (
     find_undeclared_subs,
     load_subroutines,
 )
+from .api.cfg import build_call_graph, resolve_sub_node
 from .api.comment_check import run_checks
 from .api.compare import compare_roms
+from .api.context import compute_call_depths
+from .api.find_shared import (
+    find_matching_spans,
+    load_rom,
+    matching_byte_count,
+    parse_rom_spec,
+)
 from .api.paths import project_rom_prefixes, project_versions_dirpath
 from .api.project import (
     ProjectInitConfig,
@@ -318,6 +327,314 @@ def comments_check(version_id: str, sub_target: str | None) -> Reports:
             message=f["message"],
         )
     return Reports(findings=Report(data=table))
+
+
+@main.group(help="Inter-procedural call-graph queries.")
+def cfg() -> None:
+    pass
+
+
+@cfg.command("leaves", help="List leaf subroutines (no internal callees).")
+@click.argument("version_id")
+@report_output(reports={"leaves": "Leaf subroutines"})
+def cfg_leaves(version_id: str) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+    graph = build_call_graph(files.json_filepath)
+
+    table = (
+        TableContent(
+            title=f"Leaf subroutines in {version_id}",
+            description="Subroutines whose only callees are external OS entries.",
+        )
+        .add_column("addr", "Addr")
+        .add_column("name", "Name")
+        .add_column("in_degree", "Callers")
+        .add_column("external", "External")
+    )
+    for node_id in sorted(graph.nodes):
+        if graph.out_degree(node_id) != 0:
+            continue
+        attrs = graph.nodes[node_id]
+        table.add_row(
+            addr=node_id,
+            name=attrs.get("name", node_id),
+            in_degree=str(graph.in_degree(node_id)),
+            external="yes" if attrs.get("external") else "",
+        )
+    return Reports(leaves=Report(data=table))
+
+
+@cfg.command("roots", help="List root subroutines (in-degree 0, internal).")
+@click.argument("version_id")
+@report_output(reports={"roots": "Root subroutines"})
+def cfg_roots(version_id: str) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+    graph = build_call_graph(files.json_filepath)
+
+    table = (
+        TableContent(
+            title=f"Root subroutines in {version_id}",
+            description="Internal subroutines with no callers.",
+        )
+        .add_column("addr", "Addr")
+        .add_column("name", "Name")
+        .add_column("out_degree", "Callees")
+    )
+    for node_id in sorted(graph.nodes):
+        attrs = graph.nodes[node_id]
+        if graph.in_degree(node_id) != 0 or attrs.get("external"):
+            continue
+        table.add_row(
+            addr=node_id,
+            name=attrs.get("name", node_id),
+            out_degree=str(graph.out_degree(node_id)),
+        )
+    return Reports(roots=Report(data=table))
+
+
+@cfg.command("depth", help="List subroutines by call-graph depth (leaves first).")
+@click.argument("version_id")
+@report_output(reports={"depth": "Subroutine depth"})
+def cfg_depth(version_id: str) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+    graph = build_call_graph(files.json_filepath)
+    depths = compute_call_depths(graph)
+
+    sorted_nodes = sorted(depths.items(), key=lambda x: (-x[1], x[0]))
+    table = (
+        TableContent(
+            title=f"Call-graph depth for {version_id}",
+            description=f"{len(depths)} internal subroutines",
+        )
+        .add_column("depth", "Depth")
+        .add_column("addr", "Addr")
+        .add_column("name", "Name")
+        .add_column("out_degree", "Out")
+        .add_column("in_degree", "In")
+    )
+    for node_id, depth in sorted_nodes:
+        attrs = graph.nodes[node_id]
+        table.add_row(
+            depth=str(depth),
+            addr=node_id,
+            name=attrs.get("name", node_id),
+            out_degree=str(graph.out_degree(node_id)),
+            in_degree=str(graph.in_degree(node_id)),
+        )
+    return Reports(depth=Report(data=table))
+
+
+@cfg.command("sub", help="Show callers and callees of one subroutine.")
+@click.argument("version_id")
+@click.argument("target")
+@report_output(reports={
+    "callers": "Callers of the subroutine",
+    "callees": "Callees of the subroutine",
+})
+def cfg_sub(version_id: str, target: str) -> Reports:
+    ctx = click.get_current_context()
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.json_filepath.exists():
+        raise click.UsageError(
+            f"JSON not found: {files.json_filepath}"
+        )
+    graph = build_call_graph(files.json_filepath)
+    node_id = resolve_sub_node(graph, target)
+    if node_id is None:
+        raise click.UsageError(
+            f"subroutine {target!r} not found in {version_id}"
+        )
+
+    def _ref_table(title: str, neighbours, edge_dir: str):
+        tbl = (
+            TableContent(title=title)
+            .add_column("addr", "Addr")
+            .add_column("name", "Name")
+            .add_column("type", "Edge")
+            .add_column("sites", "Call sites")
+        )
+        for nb in sorted(neighbours):
+            edge = (
+                graph.edges[nb, node_id] if edge_dir == "in"
+                else graph.edges[node_id, nb]
+            )
+            tbl.add_row(
+                addr=nb,
+                name=graph.nodes[nb].get("name", nb),
+                type=edge.get("type", "jsr"),
+                sites=", ".join(edge.get("call_sites", [])),
+            )
+        return tbl
+
+    return Reports(
+        callers=Report(
+            data=_ref_table(
+                f"Callers of {graph.nodes[node_id].get('name', node_id)}",
+                graph.predecessors(node_id),
+                "in",
+            )
+        ),
+        callees=Report(
+            data=_ref_table(
+                f"Callees of {graph.nodes[node_id].get('name', node_id)}",
+                graph.successors(node_id),
+                "out",
+            )
+        ),
+    )
+
+
+@main.group(help="Assembly-source extraction and inspection.")
+def asm() -> None:
+    pass
+
+
+@asm.command(
+    "extract",
+    help=(
+        "Extract a section of the version's .asm file by address or "
+        "label, with line numbers."
+    ),
+)
+@click.argument("version_id")
+@click.argument("start_target")
+@click.argument("end_target", required=False)
+@click.option(
+    "--window",
+    type=click.IntRange(1, 1000),
+    default=40,
+    show_default=True,
+    help="Default lines to capture when no end target is given.",
+)
+@click.pass_context
+def asm_extract_cmd(
+    ctx: click.Context,
+    version_id: str,
+    start_target: str,
+    end_target: str | None,
+    window: int,
+) -> None:
+    project_context = require_project(ctx)
+    files = resolve_version_files(project_context, version_id)
+    if not files.asm_filepath.exists():
+        raise click.UsageError(
+            f"ASM not found: {files.asm_filepath} (run disassemble first)"
+        )
+
+    asm_lines = files.asm_filepath.read_text().splitlines(keepends=True)
+    try:
+        section = extract_section(
+            asm_lines, start_target, end_target, default_window=window
+        )
+    except LookupError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    for offset, text in enumerate(section.lines):
+        click.echo(
+            f"{section.start_line + offset + 1:5d}  {text}", nl=False
+        )
+
+
+@main.command(
+    "shared",
+    help=(
+        "Find shared 6502 code fragments between a primary ROM and "
+        "one or more reference ROMs. Specs use the form "
+        "[label=]path@load-addr (e.g. nfs=path/to/nfs.rom@&8000)."
+    ),
+)
+@click.argument("primary")
+@click.argument("references", nargs=-1, required=True)
+@click.option(
+    "--min-len",
+    type=click.IntRange(1, 1000),
+    default=8,
+    show_default=True,
+    help="Minimum matching span length, in instructions.",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(1, 1000),
+    default=None,
+    help="Show at most N longest matches per reference.",
+)
+@report_output(reports={"matches": "Shared code spans"})
+def shared(
+    primary: str,
+    references: tuple[str, ...],
+    min_len: int,
+    limit: int | None,
+) -> Reports:
+    try:
+        p_label, p_path, p_base = parse_rom_spec(primary)
+    except (ValueError, FileNotFoundError) as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    primary_rom = load_rom(p_label, p_path, p_base)
+
+    table = (
+        TableContent(
+            title=f"Shared spans against {primary_rom.label}",
+            description=(
+                f"{len(primary_rom.data)} bytes @ &{primary_rom.load_addr:04X}"
+            ),
+        )
+        .add_column("reference", "Reference")
+        .add_column("size", "Instr")
+        .add_column("bytes", "Bytes")
+        .add_column("primary", "Primary addr")
+        .add_column("ref", "Reference addr")
+    )
+
+    for spec in references:
+        try:
+            r_label, r_path, r_base = parse_rom_spec(spec)
+        except (ValueError, FileNotFoundError) as exc:
+            raise click.UsageError(str(exc)) from exc
+        reference = load_rom(r_label, r_path, r_base)
+        matches = find_matching_spans(primary_rom, reference, min_len)
+        matches.sort(key=lambda m: -m[2])
+        if limit is not None:
+            matches = matches[:limit]
+        for a_idx, b_idx, size in matches:
+            a_addr = primary_rom.runtime_addr(a_idx)
+            b_addr = reference.runtime_addr(b_idx)
+            a_off = primary_rom.instructions[a_idx].offset
+            a_end_idx = a_idx + size
+            a_end_off = (
+                primary_rom.instructions[a_end_idx].offset
+                if a_end_idx < len(primary_rom.instructions)
+                else len(primary_rom.data)
+            )
+            span_bytes = a_end_off - a_off
+            table.add_row(
+                reference=r_label,
+                size=str(size),
+                bytes=str(span_bytes),
+                primary=f"&{a_addr:04X}",
+                ref=f"&{b_addr:04X}",
+            )
+
+    return Reports(matches=Report(data=table))
 
 
 @main.group(help="Initialise and manage fantasm projects.")

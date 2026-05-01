@@ -186,6 +186,77 @@ class TestCommentsCheck:
         )
         assert result.exit_code == 0, result.output
 
+    def test_cfg_leaves(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        _write_minimal_disasm(version_dirpath, "demo", "1.0")
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "cfg", "leaves", "1.0", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_cfg_depth(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        _write_minimal_disasm(version_dirpath, "demo", "1.0")
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "cfg", "depth", "1.0", "--as", "tsv",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_asm_extract(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        _init_project(tmp_path, runner, "demo", "demo")
+        _add_version(tmp_path, runner, "1.0", "demo")
+
+        version_dirpath = tmp_path / "versions" / "demo-1.0"
+        asm_filepath = version_dirpath / "output" / "demo-1.0.asm"
+        asm_filepath.parent.mkdir(exist_ok=True)
+        asm_filepath.write_text(
+            "\n.start\n    LDA #$00       ;8000:\n    RTS            ;8002:\n"
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "--project-root", str(tmp_path),
+                "asm", "extract", "1.0", "$8000",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "LDA" in result.output
+
+    def test_shared_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["shared", "--help"])
+        assert result.exit_code == 0
+        assert "[label=]path@load-addr" in result.output
+
+    def test_shared_invalid_spec(self) -> None:
+        runner = CliRunner()
+        # No @load-addr.
+        result = runner.invoke(
+            main, ["shared", "/nonexistent.rom", "/other.rom@&8000"]
+        )
+        assert result.exit_code != 0
+        assert "@" in result.output or "load" in result.output.lower()
+
     def test_invalid_sub_address(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")
