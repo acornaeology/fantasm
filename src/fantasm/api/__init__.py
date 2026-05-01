@@ -19,6 +19,15 @@ from .asm_extract import (
     find_line_for_target,
     parse_address,
 )
+from .labels import (
+    AUTO_LABEL_RE,
+    CATEGORY_ORDER,
+    build_target_refs,
+    classify_labels,
+    collect_auto_labels,
+    find_containing_sub_for_addr,
+    sort_labels,
+)
 from .audit import (
     ALL_FLAGS,
     BASE_MEMORY_REGIONS,
@@ -54,9 +63,11 @@ from .paths import (
 
 __all__ = [
     "ALL_FLAGS",
+    "AUTO_LABEL_RE",
     "AsmSection",
     "BASE_MEMORY_REGIONS",
     "BRANCH_MNEMONICS",
+    "CATEGORY_ORDER",
     "OPCODE_LENGTHS",
     "OPCODE_LENGTHS_65C02",
     "OPCODE_MNEMONICS",
@@ -65,9 +76,13 @@ __all__ = [
     "VersionNotFoundError",
     "build_index",
     "build_memory_regions",
+    "build_target_refs",
+    "classify_labels",
+    "collect_auto_labels",
     "end_type",
     "extract_section",
     "find_containing_sub",
+    "find_containing_sub_for_addr",
     "find_line_for_target",
     "find_sub",
     "find_undeclared_subs",
@@ -84,4 +99,5 @@ __all__ = [
     "rom_prefix",
     "rom_prefix_for_project",
     "scan_routine_range",
+    "sort_labels",
 ]
