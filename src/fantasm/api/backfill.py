@@ -530,7 +530,201 @@ def propose_propagations(
     )
 
 
+# --- Cross-version annotation diff -----------------------------------
+
+
+@dataclass(frozen=True)
+class AnnotationDiff:
+    """A single annotation difference between two driver scripts.
+
+    ``status`` is one of:
+
+    - ``"differs"`` — both source and target carry an annotation of
+      this kind at the mapped addresses, but the values differ
+      (different comment text, different label name, different sub
+      title);
+    - ``"missing_in_target"`` — source has an annotation; target's
+      mapped address has no annotation of this kind;
+    - ``"no_mapping"`` — source's address has no entry in the
+      confidence map (or below threshold), so the annotation can't
+      be located in the target at all.
+
+    For ``"no_mapping"``, ``target_addr`` is ``None`` and
+    ``confidence`` is ``0``.
+    """
+
+    source_addr: int
+    target_addr: int | None
+    confidence: int
+    kind: str  # "comment" | "label" | "subroutine"
+    source_value: str
+    target_value: str | None
+    status: str
+
+
+def diff_annotations(
+    source_text: str,
+    target_text: str,
+    confidence_map: dict[int, tuple[int, int]],
+    *,
+    threshold: int = 5,
+) -> list[AnnotationDiff]:
+    """Compare annotations across two driver scripts.
+
+    For each annotation in ``source_text``, looks up its mapped
+    target address in ``confidence_map`` (filtered by
+    ``threshold``) and compares against the target driver's
+    annotations at that address. Returns a list of
+    :class:`AnnotationDiff` records covering every discrepancy.
+
+    "Discrepancy" includes addresses with no mapping, addresses
+    where the target lacks the same kind of annotation, and
+    addresses where both sides have annotations of the same kind
+    but with different content.
+    """
+    src_comments, src_labels, _, src_subs = parse_annotations(source_text)
+    tgt_comments, tgt_labels, _, tgt_subs = parse_annotations(target_text)
+
+    diffs: list[AnnotationDiff] = []
+
+    def _resolve(src_addr: int) -> tuple[int | None, int]:
+        mapping = confidence_map.get(src_addr)
+        if mapping is None or mapping[1] < threshold:
+            return None, 0
+        return mapping[0], mapping[1]
+
+    for src_addr, comment_list in src_comments.items():
+        target_addr, confidence = _resolve(src_addr)
+        for text, _line in comment_list:
+            if target_addr is None:
+                diffs.append(
+                    AnnotationDiff(
+                        source_addr=src_addr,
+                        target_addr=None,
+                        confidence=0,
+                        kind="comment",
+                        source_value=text,
+                        target_value=None,
+                        status="no_mapping",
+                    )
+                )
+                continue
+            tgt_at_addr = tgt_comments.get(target_addr, [])
+            tgt_texts = [t for t, _ in tgt_at_addr]
+            if text in tgt_texts:
+                continue
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=target_addr,
+                    confidence=confidence,
+                    kind="comment",
+                    source_value=text,
+                    target_value=" | ".join(tgt_texts) if tgt_texts else None,
+                    status="differs" if tgt_texts else "missing_in_target",
+                )
+            )
+
+    for src_addr, (name, _line) in src_labels.items():
+        target_addr, confidence = _resolve(src_addr)
+        if target_addr is None:
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=None,
+                    confidence=0,
+                    kind="label",
+                    source_value=name,
+                    target_value=None,
+                    status="no_mapping",
+                )
+            )
+            continue
+        tgt_label = tgt_labels.get(target_addr)
+        if tgt_label is None:
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=target_addr,
+                    confidence=confidence,
+                    kind="label",
+                    source_value=name,
+                    target_value=None,
+                    status="missing_in_target",
+                )
+            )
+        elif tgt_label[0] != name:
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=target_addr,
+                    confidence=confidence,
+                    kind="label",
+                    source_value=name,
+                    target_value=tgt_label[0],
+                    status="differs",
+                )
+            )
+
+    for src_addr, src_full in src_subs.items():
+        target_addr, confidence = _resolve(src_addr)
+        # Source name from the call's first quoted arg.
+        src_name_match = re.search(
+            r'subroutine\(0x[0-9A-Fa-f]+,\s*"([^"]+)"', src_full
+        )
+        src_name = src_name_match.group(1) if src_name_match else "(unnamed)"
+        if target_addr is None:
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=None,
+                    confidence=0,
+                    kind="subroutine",
+                    source_value=src_name,
+                    target_value=None,
+                    status="no_mapping",
+                )
+            )
+            continue
+        tgt_full = tgt_subs.get(target_addr)
+        if tgt_full is None:
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=target_addr,
+                    confidence=confidence,
+                    kind="subroutine",
+                    source_value=src_name,
+                    target_value=None,
+                    status="missing_in_target",
+                )
+            )
+            continue
+        tgt_name_match = re.search(
+            r'subroutine\(0x[0-9A-Fa-f]+,\s*"([^"]+)"', tgt_full
+        )
+        tgt_name = (
+            tgt_name_match.group(1) if tgt_name_match else "(unnamed)"
+        )
+        if src_name != tgt_name:
+            diffs.append(
+                AnnotationDiff(
+                    source_addr=src_addr,
+                    target_addr=target_addr,
+                    confidence=confidence,
+                    kind="subroutine",
+                    source_value=src_name,
+                    target_value=tgt_name,
+                    status="differs",
+                )
+            )
+
+    diffs.sort(key=lambda d: (d.kind, d.source_addr))
+    return diffs
+
+
 __all__ = [
+    "AnnotationDiff",
     "PropagationCandidate",
     "PropagationReport",
     "RE_INLINE_COMMENT",
@@ -539,6 +733,7 @@ __all__ = [
     "build_confidence_map",
     "build_confidence_map_for_block",
     "compose_chained_map",
+    "diff_annotations",
     "group_logical_statements",
     "parse_annotations",
     "propose_propagations",

@@ -205,9 +205,11 @@ class TestTranslateSubroutine:
 
 
 from fantasm.api.backfill import (
+    AnnotationDiff,
     PropagationCandidate,
     PropagationReport,
     compose_chained_map,
+    diff_annotations,
     propose_propagations,
 )
 from fantasm.api.version_graph import (
@@ -395,3 +397,79 @@ class TestProposePropagations:
         # Address translated to target.
         assert "0x9020" in sub_candidates[0].text
         assert sub_candidates[0].name == "init"
+
+
+# --- diff_annotations -------------------------------------------
+
+
+class TestDiffAnnotations:
+    def test_label_name_differs(self) -> None:
+        source = 'label(0x8010, "init_state")\n'
+        target = 'label(0x9010, "initialise_state")\n'
+        diffs = diff_annotations(source, target, {0x8010: (0x9010, 50)})
+        assert len(diffs) == 1
+        assert diffs[0].kind == "label"
+        assert diffs[0].status == "differs"
+        assert diffs[0].source_value == "init_state"
+        assert diffs[0].target_value == "initialise_state"
+
+    def test_label_missing_in_target(self) -> None:
+        diffs = diff_annotations(
+            'label(0x8010, "init_state")\n', "", {0x8010: (0x9010, 50)}
+        )
+        assert len(diffs) == 1
+        assert diffs[0].status == "missing_in_target"
+        assert diffs[0].target_value is None
+
+    def test_no_mapping(self) -> None:
+        diffs = diff_annotations('label(0x8010, "init_state")\n', "", {})
+        assert len(diffs) == 1
+        assert diffs[0].status == "no_mapping"
+        assert diffs[0].target_addr is None
+        assert diffs[0].confidence == 0
+
+    def test_below_threshold_treated_as_no_mapping(self) -> None:
+        diffs = diff_annotations(
+            'label(0x8010, "init_state")\n',
+            "",
+            {0x8010: (0x9010, 1)},
+            threshold=5,
+        )
+        assert diffs[0].status == "no_mapping"
+
+    def test_matching_label_no_diff(self) -> None:
+        source = 'label(0x8010, "init_state")\n'
+        target = 'label(0x9010, "init_state")\n'
+        diffs = diff_annotations(source, target, {0x8010: (0x9010, 50)})
+        assert diffs == []
+
+    def test_comment_differs(self) -> None:
+        source = 'comment(0x8000, "first inline", inline=True)\n'
+        target = 'comment(0x9000, "second inline", inline=True)\n'
+        diffs = diff_annotations(source, target, {0x8000: (0x9000, 50)})
+        assert len(diffs) == 1
+        assert diffs[0].kind == "comment"
+        assert diffs[0].status == "differs"
+
+    def test_subroutine_name_differs(self) -> None:
+        source = 'subroutine(0x8020, "init", hook=None)\n'
+        target = 'subroutine(0x9020, "initialise", hook=None)\n'
+        diffs = diff_annotations(source, target, {0x8020: (0x9020, 50)})
+        sub_diffs = [d for d in diffs if d.kind == "subroutine"]
+        assert len(sub_diffs) == 1
+        assert sub_diffs[0].source_value == "init"
+        assert sub_diffs[0].target_value == "initialise"
+        assert sub_diffs[0].status == "differs"
+
+    def test_diffs_sorted_by_kind_then_addr(self) -> None:
+        source = (
+            'comment(0x8000, "c1", inline=True)\n'
+            'label(0x8010, "L1")\n'
+            'subroutine(0x8020, "S1")\n'
+            'comment(0x8030, "c2", inline=True)\n'
+        )
+        diffs = diff_annotations(source, "", {})
+        assert all(d.status == "no_mapping" for d in diffs)
+        kinds_addrs = [(d.kind, d.source_addr) for d in diffs]
+        # Sorted by (kind, addr); kinds in alpha order.
+        assert kinds_addrs == sorted(kinds_addrs)
