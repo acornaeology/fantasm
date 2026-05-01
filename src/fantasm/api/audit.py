@@ -18,8 +18,9 @@ the ROM range from JSON metadata). When omitted, the default is the
 ROM range alone — sub extents are bounded by ROM only. The earlier
 hardcoded BBC ranges that the sibling code carried have been removed.
 
-:data:`TERMINATING_MNEMONICS` and :data:`BRANCH_MNEMONICS` are 6502
-facts and stay as constants here.
+``TERMINATING_MNEMONICS`` and ``BRANCH_MNEMONICS`` are 6502 facts;
+this module imports them from :mod:`fantasm.api.mos6502` (the
+canonical home) and uses them internally.
 """
 
 from __future__ import annotations
@@ -30,14 +31,7 @@ import warnings
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-
-# Mnemonics that unconditionally terminate control flow.
-TERMINATING_MNEMONICS = frozenset({"rts", "jmp", "brk", "rti"})
-
-# Conditional branch mnemonics.
-BRANCH_MNEMONICS = frozenset(
-    {"bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs"}
-)
+from .mos6502 import BRANCH_MNEMONICS, TERMINATING_MNEMONICS
 
 ALL_FLAGS: tuple[str, ...] = (
     "FALL_THROUGH",
@@ -473,8 +467,6 @@ def find_undeclared_subs(json_filepath: str | Path) -> list[dict]:
 
 __all__ = [
     "ALL_FLAGS",
-    "BRANCH_MNEMONICS",
-    "TERMINATING_MNEMONICS",
     "build_memory_regions",
     "end_type",
     "find_containing_sub",

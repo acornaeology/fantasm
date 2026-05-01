@@ -24,6 +24,7 @@ from pathlib import Path
 import networkx as nx
 
 from .audit import build_memory_regions, region_for_addr
+from .mos6502 import BRANCH_MNEMONICS, TERMINATING_MNEMONICS
 
 
 def build_call_graph(
@@ -152,12 +153,6 @@ def build_call_graph(
 # --- Basic-block analysis ---------------------------------------
 
 
-_BRANCH_MNEMONICS_BB = frozenset(
-    {"bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs"}
-)
-_JUMP_MNEMONICS_BB = frozenset({"jmp", "rts", "rti", "brk"})
-
-
 from dataclasses import dataclass
 
 
@@ -227,12 +222,12 @@ def find_basic_blocks(items: Iterable[dict]) -> list[BasicBlock]:
     for index, item in enumerate(item_list):
         mnemonic = item.get("mnemonic", "")
         target = item.get("target")
-        if mnemonic in _BRANCH_MNEMONICS_BB:
+        if mnemonic in BRANCH_MNEMONICS:
             if target is not None and target in addr_set:
                 block_starts.add(target)
             if index + 1 < len(item_list):
                 block_starts.add(item_list[index + 1]["addr"])
-        elif mnemonic in _JUMP_MNEMONICS_BB or mnemonic == "jsr":
+        elif mnemonic in TERMINATING_MNEMONICS or mnemonic == "jsr":
             if index + 1 < len(item_list):
                 block_starts.add(item_list[index + 1]["addr"])
 
@@ -268,7 +263,7 @@ def find_basic_blocks(items: Iterable[dict]) -> list[BasicBlock]:
             if block_index + 1 < len(sorted_starts)
             else None
         )
-        if last_mnemonic in _BRANCH_MNEMONICS_BB:
+        if last_mnemonic in BRANCH_MNEMONICS:
             if last_target is not None:
                 exits.append(BasicBlockExit(last_target, "branch"))
             if next_start is not None:

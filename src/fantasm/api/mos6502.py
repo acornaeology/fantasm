@@ -210,11 +210,25 @@ def mnemonic(opcode: int, cpu: str | None = "6502") -> str:
     return mnemonics[opcode]
 
 
+# Conditional branch mnemonics — relative-addressed instructions that
+# may or may not transfer control depending on the flag state.
+BRANCH_MNEMONICS: frozenset[str] = frozenset(
+    {"bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs"}
+)
+
+# Mnemonics that unconditionally end a basic block / control flow.
+TERMINATING_MNEMONICS: frozenset[str] = frozenset(
+    {"rts", "jmp", "brk", "rti"}
+)
+
+
 __all__ = [
+    "BRANCH_MNEMONICS",
     "OPCODE_LENGTHS",
     "OPCODE_MNEMONICS",
     "OPCODE_LENGTHS_65C02",
     "OPCODE_MNEMONICS_65C02",
+    "TERMINATING_MNEMONICS",
     "opcode_tables",
     "instruction_length",
     "mnemonic",

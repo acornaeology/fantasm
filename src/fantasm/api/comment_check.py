@@ -23,6 +23,8 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from .mos6502 import BRANCH_MNEMONICS
+
 
 # Tube register addresses (BBC Tube interface).
 TUBE_REGISTERS: dict[int, str] = {
@@ -43,11 +45,6 @@ IMM_REG_MNEMONICS: dict[str, str] = {
     "and": "A", "ora": "A", "eor": "A",
     "adc": "A", "sbc": "A",
 }
-
-BRANCH_MNEMONICS: frozenset[str] = frozenset(
-    {"bcc", "bcs", "beq", "bne", "bmi", "bpl", "bvc", "bvs"}
-)
-
 
 def parse_imm_value(operand: str) -> int | None:
     """Parse an immediate operand like ``#&1C`` or ``#42``. Returns int or None."""
@@ -568,7 +565,6 @@ def run_checks(
 
 __all__ = [
     "ALL_CHECKS",
-    "BRANCH_MNEMONICS",
     "CR_ADDRESSES",
     "IMM_REG_MNEMONICS",
     "TUBE_REGISTERS",

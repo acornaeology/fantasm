@@ -169,8 +169,6 @@ from .comment_check import (
 )
 from .audit import (
     ALL_FLAGS,
-    BRANCH_MNEMONICS,
-    TERMINATING_MNEMONICS,
     build_memory_regions,
     end_type,
     find_containing_sub,
@@ -181,10 +179,12 @@ from .audit import (
     scan_routine_range,
 )
 from .mos6502 import (
+    BRANCH_MNEMONICS,
     OPCODE_LENGTHS,
     OPCODE_LENGTHS_65C02,
     OPCODE_MNEMONICS,
     OPCODE_MNEMONICS_65C02,
+    TERMINATING_MNEMONICS,
     instruction_length,
     mnemonic,
     opcode_tables,

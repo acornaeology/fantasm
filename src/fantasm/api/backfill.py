@@ -38,14 +38,6 @@ from pathlib import Path
 from .blockmatch import disassemble_to_opcodes
 
 
-# Default workspace ranges: zero page only. NFS extended this with
-# 0x0D00-0x0FFF; pass workspace_ranges=[(0, 0x100), (0xD00, 0x1000)]
-# (or whatever a project's `[audit] memory_regions` defines) to match.
-_DEFAULT_WORKSPACE_RANGES: tuple[tuple[int, int], ...] = (
-    (0x0000, 0x0100),
-)
-
-
 def build_confidence_map_for_block(
     insts_a: Sequence[tuple[int, int, int]],
     insts_b: Sequence[tuple[int, int, int]],
@@ -82,7 +74,7 @@ def build_confidence_map(
     reloc_blocks: Iterable[tuple[int, int, int, int]] = (),
     *,
     rom_base: int = 0x8000,
-    workspace_ranges: Iterable[tuple[int, int]] = _DEFAULT_WORKSPACE_RANGES,
+    workspace_ranges: Iterable[tuple[int, int]] = ((0x0000, 0x0100),),
     high_confidence: int = 1000,
     cpu: str = "6502",
 ) -> dict[int, tuple[int, int]]:
