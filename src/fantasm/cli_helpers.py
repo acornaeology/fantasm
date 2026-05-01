@@ -12,10 +12,10 @@ the user sees a clean message rather than a Python traceback.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import click
 
@@ -268,11 +268,40 @@ def analysis_context(
     )
 
 
+def make_rom_loader(
+    project_context: ProjectContext,
+) -> Callable[[str], bytes]:
+    """Return a memoised ROM-bytes loader keyed by version id.
+
+    Used by cross-version commands (backfill, annotations diff) that
+    walk the version graph and need to read each visited version's
+    ROM. The cache lives in the closure, so each command invocation
+    gets its own loader — caching is local to a single CLI run, not
+    process-global.
+
+    Raises ``click.UsageError`` if a version's ROM file is missing.
+    """
+    cache: dict[str, bytes] = {}
+
+    def loader(version_id: str) -> bytes:
+        if version_id not in cache:
+            files = resolve_version_files(project_context, version_id)
+            if not files.rom_filepath.exists():
+                raise click.UsageError(
+                    f"ROM not found: {files.rom_filepath}"
+                )
+            cache[version_id] = files.rom_filepath.read_bytes()
+        return cache[version_id]
+
+    return loader
+
+
 __all__ = [
     "AnalysisContext",
     "VersionFiles",
     "analysis_context",
     "effective_regions_for",
+    "make_rom_loader",
     "project_cpu",
     "project_rom_base",
     "require_project",
