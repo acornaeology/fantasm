@@ -29,6 +29,13 @@ from .labels import (
     sort_labels,
 )
 from .cfg import build_call_graph, resolve_sub_node
+from .rename_labels import (
+    apply_renames_to_lines,
+    find_insert_position,
+    find_rename_section,
+    parse_label_declarations,
+)
+from .verify import BeebasmNotFoundError, VerifyResult, verify_round_trip
 from .context import compute_call_depths
 from .insert_point import (
     AlreadyDeclared,
