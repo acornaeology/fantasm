@@ -98,6 +98,11 @@ class Version:
     ``explicit_regions`` is ``None`` if the entry didn't override
     ``memory.regions`` (in which case the graph's project defaults
     apply).
+
+    Free-form metadata fields (``notes``, ``description``,
+    ``release_date``, ``source``) are surfaced for tooling and
+    documentation but don't affect any analysis. ``release_date`` is
+    expected to be an ISO-8601 date string but isn't parsed.
     """
 
     id: str
@@ -105,6 +110,9 @@ class Version:
     reloc_blocks: tuple[RelocBlock, ...]
     explicit_regions: tuple[Region, ...] | None
     notes: str | None = None
+    description: str | None = None
+    release_date: str | None = None
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +415,9 @@ def _parse_version_entry(entry: Mapping) -> Version:
         ),
         explicit_regions=explicit_regions,
         notes=entry.get("notes"),
+        description=entry.get("description"),
+        release_date=entry.get("release_date"),
+        source=entry.get("source"),
     )
 
 

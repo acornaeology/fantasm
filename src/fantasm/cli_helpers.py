@@ -14,8 +14,11 @@ import click
 
 from .api.paths import (
     VersionNotFoundError,
+    project_driver_dirname,
+    project_driver_filename_template,
     project_rom_prefixes,
     project_versions_dirpath,
+    render_driver_filename,
     resolve_version_dirpath,
 )
 from .api.version_graph import (
@@ -32,7 +35,11 @@ class VersionFiles:
 
     ``versions/{prefix}-{version_id}/`` is the version directory; the
     ROM lives under ``rom/{prefix}-{version_id}.rom`` and disassembly
-    artefacts under ``output/{prefix}-{version_id}.{asm,json}``.
+    artefacts under ``output/{prefix}-{version_id}.{asm,json}``. The
+    driver script's path is derived from
+    ``[versions] driver_dirname`` and ``[versions] driver_filename``
+    (defaults: ``disassemble/`` and
+    ``disasm_{prefix}_{version_id_no_dots}.py``).
     """
 
     version_id: str
@@ -41,6 +48,7 @@ class VersionFiles:
     rom_filepath: Path
     asm_filepath: Path
     json_filepath: Path
+    driver_filepath: Path
 
 
 def require_project(ctx: click.Context) -> ProjectContext:
@@ -98,6 +106,12 @@ def resolve_version_files(
     )
 
     base = f"{matched_prefix}-{version_id}"
+    driver_dirname = project_driver_dirname(project_context)
+    driver_filename = render_driver_filename(
+        project_driver_filename_template(project_context),
+        matched_prefix,
+        version_id,
+    )
     return VersionFiles(
         version_id=version_id,
         prefix=matched_prefix,
@@ -105,6 +119,7 @@ def resolve_version_files(
         rom_filepath=version_dirpath / "rom" / f"{base}.rom",
         asm_filepath=version_dirpath / "output" / f"{base}.asm",
         json_filepath=version_dirpath / "output" / f"{base}.json",
+        driver_filepath=version_dirpath / driver_dirname / driver_filename,
     )
 
 

@@ -375,7 +375,8 @@ class TestCommentsCheck:
             [
                 "--project-root", str(tmp_path),
                 "backfill", "1.0", "2.0",
-                str(driver_a), str(driver_b),
+                "--source-driver", str(driver_a),
+                "--target-driver", str(driver_b),
             ],
         )
         assert result.exit_code != 0
@@ -417,7 +418,8 @@ class TestCommentsCheck:
             [
                 "--project-root", str(tmp_path),
                 "backfill", "1.0", "2.0",
-                str(source_driver), str(target_driver),
+                "--source-driver", str(source_driver),
+                "--target-driver", str(target_driver),
                 # Tiny ROM → tiny block_lengths; lower the threshold
                 # so the small fixture exercises the propagation.
                 "--threshold", "1",

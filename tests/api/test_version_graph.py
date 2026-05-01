@@ -532,3 +532,25 @@ class TestLoadVersionGraph:
         project = _project_with_config(tmp_path, config)
         with pytest.raises(VersionGraphError, match="'id'"):
             load_version_graph(project)
+
+    def test_metadata_fields_carried_through(self, tmp_path) -> None:
+        config = {
+            "versions": {
+                "entry": [
+                    {
+                        "id": "3.34",
+                        "notes": "first release",
+                        "description": "zero-based layout",
+                        "release_date": "1984-01-15",
+                        "source": "Acorn archive #001",
+                    },
+                ],
+            },
+        }
+        project = _project_with_config(tmp_path, config)
+        graph = load_version_graph(project)
+        v = graph.get("3.34")
+        assert v.notes == "first release"
+        assert v.description == "zero-based layout"
+        assert v.release_date == "1984-01-15"
+        assert v.source == "Acorn archive #001"

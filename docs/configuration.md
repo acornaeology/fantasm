@@ -72,6 +72,33 @@ name = "acorn-nfs"
 prefixes = ["anfs", "nfs"]
 ```
 
+## Driver-script paths
+
+py8dis driver scripts (the Python files that build a disassembly)
+sit by convention under each version directory. Their location and
+filename follow a project-wide template:
+
+```toml
+[versions]
+# Subdirectory under each version's directory holding the driver
+# script. Default: "disassemble".
+driver_dirname = "disassemble"
+
+# Filename template. Tokens: {prefix}, {version_id},
+# {version_id_no_dots}. Default:
+driver_filename = "disasm_{prefix}_{version_id_no_dots}.py"
+```
+
+So for NFS version ``3.10`` (prefix ``anfs``), with the defaults,
+the driver script's path is
+``versions/anfs-3.10/disassemble/disasm_anfs_310.py``.
+
+Commands that need a driver script (e.g. ``fantasm backfill``,
+``fantasm lint``) compute this path automatically from the version
+ID. Pass an explicit path with the relevant ``--source-driver`` /
+``--target-driver`` / ``DRIVER_FILEPATH`` argument when the project
+diverges from the convention.
+
 ## Resolution semantics
 
 `fantasm.api.paths.resolve_version_dirpath_for_project(project, version_id)`
@@ -179,6 +206,21 @@ reloc_blocks = [ ... ]
 id = "mystery-anfs"
 notes = "Found on a 5.25\" disk; ancestry TBD pending opcode analysis"
 reloc_blocks = []
+```
+
+### Free-form metadata per version
+
+Each ``[[versions.entry]]`` may carry the following fields. None of
+them affect analysis — they're surfaced for tooling and
+documentation:
+
+```toml
+[[versions.entry]]
+id = "3.34"
+description = "First public release; zero-based workspace layout"
+release_date = "1984-01-15"   # ISO-8601, not parsed
+source = "Acorn Cambridge archive disk #ANFS-001"
+notes = "Reverse-engineered from binary; no source survives"
 ```
 
 ### `reloc_blocks`

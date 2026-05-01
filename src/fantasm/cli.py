@@ -1085,13 +1085,25 @@ def lint_annotations(
 )
 @click.argument("source_version")
 @click.argument("target_version")
-@click.argument(
+@click.option(
+    "--source-driver",
     "source_driver",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to the source driver script. Defaults to the path "
+        "computed from [versions] driver_dirname/driver_filename for "
+        "the source version."
+    ),
 )
-@click.argument(
+@click.option(
+    "--target-driver",
     "target_driver",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Path to the target driver script. Defaults to the path "
+        "computed from [versions] driver_dirname/driver_filename for "
+        "the target version."
+    ),
 )
 @click.option(
     "--threshold",
@@ -1117,8 +1129,8 @@ def lint_annotations(
 def backfill_cmd(
     source_version: str,
     target_version: str,
-    source_driver: Path,
-    target_driver: Path,
+    source_driver: Path | None,
+    target_driver: Path | None,
     threshold: int,
     cpu: str,
     rom_base: int,
@@ -1138,6 +1150,25 @@ def backfill_cmd(
             "no [[versions.entry]] entries in fantasm.toml; backfill "
             "needs the version graph to walk between versions"
         )
+
+    if source_driver is None:
+        source_driver = resolve_version_files(
+            project_context, source_version
+        ).driver_filepath
+        if not source_driver.exists():
+            raise click.UsageError(
+                f"source driver not found at {source_driver}; pass "
+                "--source-driver explicitly"
+            )
+    if target_driver is None:
+        target_driver = resolve_version_files(
+            project_context, target_version
+        ).driver_filepath
+        if not target_driver.exists():
+            raise click.UsageError(
+                f"target driver not found at {target_driver}; pass "
+                "--target-driver explicitly"
+            )
 
     # ROM loader: caches each version's bytes after the first load.
     rom_cache: dict[str, bytes] = {}

@@ -35,6 +35,30 @@ if TYPE_CHECKING:
 
 DEFAULT_VERSIONS_DIRNAME = "versions"
 
+# Default convention for the per-version py8dis driver script.
+# Tokens: {prefix}, {version_id}, {version_id_no_dots}.
+# Sibling NFS uses e.g. "disasm_anfs_310.py" for version "3.10".
+DEFAULT_DRIVER_DIRNAME = "disassemble"
+DEFAULT_DRIVER_FILENAME_TEMPLATE = "disasm_{prefix}_{version_id_no_dots}.py"
+
+
+def render_driver_filename(
+    template: str, prefix: str, version_id: str
+) -> str:
+    """Render a driver-filename template with project / version tokens.
+
+    Recognised tokens:
+
+    - ``{prefix}``              — the matched ROM prefix
+    - ``{version_id}``          — the version ID as written
+    - ``{version_id_no_dots}``  — version ID with all ``.`` removed
+    """
+    return template.format(
+        prefix=prefix,
+        version_id=version_id,
+        version_id_no_dots=version_id.replace(".", ""),
+    )
+
 
 class VersionNotFoundError(LookupError):
     """Raised when no version directory matches the requested ID."""
@@ -157,13 +181,40 @@ def rom_prefix_for_project(
     return rom_prefix(version_dirpath, project_rom_prefixes(project))
 
 
+def project_driver_dirname(project: ProjectContext) -> str:
+    """Return the project's driver-script subdirectory name.
+
+    Reads ``[versions] driver_dirname`` from ``fantasm.toml``,
+    defaulting to ``"disassemble"``.
+    """
+    versions_section = project.config.get("versions", {})
+    return versions_section.get("driver_dirname", DEFAULT_DRIVER_DIRNAME)
+
+
+def project_driver_filename_template(project: ProjectContext) -> str:
+    """Return the project's driver-filename template.
+
+    Reads ``[versions] driver_filename`` from ``fantasm.toml``.
+    Default: ``"disasm_{prefix}_{version_id_no_dots}.py"``.
+    """
+    versions_section = project.config.get("versions", {})
+    return versions_section.get(
+        "driver_filename", DEFAULT_DRIVER_FILENAME_TEMPLATE
+    )
+
+
 __all__ = [
+    "DEFAULT_DRIVER_DIRNAME",
+    "DEFAULT_DRIVER_FILENAME_TEMPLATE",
     "DEFAULT_VERSIONS_DIRNAME",
     "VersionNotFoundError",
-    "resolve_version_dirpath",
-    "rom_prefix",
-    "project_versions_dirpath",
+    "project_driver_dirname",
+    "project_driver_filename_template",
     "project_rom_prefixes",
+    "project_versions_dirpath",
+    "render_driver_filename",
+    "resolve_version_dirpath",
     "resolve_version_dirpath_for_project",
+    "rom_prefix",
     "rom_prefix_for_project",
 ]
