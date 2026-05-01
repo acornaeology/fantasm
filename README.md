@@ -1,6 +1,6 @@
 # Fantasm
 
-The Fantastic (dis-/re-)Assembly tools for 6502 code, version `0.4.1`.
+The Fantastic (dis-/re-)Assembly tools for 6502 code, version `0.4.2`.
 
 Fantasm is a consolidated suite of tools for working on annotated
 disassemblies of 6502-based ROMs (originally those from the Acorn / BBC
@@ -25,7 +25,7 @@ dependency:
 ```toml
 [project]
 dependencies = [
-    "fantasm>=0.4.1",
+    "fantasm>=0.4.2",
 ]
 ```
 
