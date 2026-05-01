@@ -42,6 +42,14 @@ fantasm = "fantasm.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+# Pin the dependency index to canonical PyPI. Belt-and-braces with the
+# .gitignored uv.lock: even if a private-index lockfile were
+# accidentally re-introduced, or a contributor's global uv config
+# pointed elsewhere, `uv sync` resolves from PyPI here. Slightly
+# slower than an internal mirror locally; worth it for CI parity.
+index-url = "https://pypi.org/simple"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
