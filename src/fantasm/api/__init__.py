@@ -28,6 +28,25 @@ from .labels import (
     find_containing_sub_for_addr,
     sort_labels,
 )
+from .comment_check import (
+    ALL_CHECKS,
+    CR_ADDRESSES,
+    IMM_REG_MNEMONICS,
+    TUBE_REGISTERS,
+    build_known_addrs,
+    check_block_stale_addr,
+    check_branch_target,
+    check_chain_comments,
+    check_cr_value,
+    check_desc_stale_addr,
+    check_reg_value,
+    check_stale_addr,
+    check_tube_register,
+    find_chains,
+    find_stale_addrs,
+    parse_imm_value,
+    run_checks,
+)
 from .audit import (
     ALL_FLAGS,
     BASE_MEMORY_REGIONS,
