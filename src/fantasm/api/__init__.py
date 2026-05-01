@@ -21,13 +21,29 @@ from .mos6502 import (
     mnemonic,
     opcode_tables,
 )
+from .paths import (
+    VersionNotFoundError,
+    project_rom_prefixes,
+    project_versions_dirpath,
+    resolve_version_dirpath,
+    resolve_version_dirpath_for_project,
+    rom_prefix,
+    rom_prefix_for_project,
+)
 
 __all__ = [
     "OPCODE_LENGTHS",
     "OPCODE_LENGTHS_65C02",
     "OPCODE_MNEMONICS",
     "OPCODE_MNEMONICS_65C02",
+    "VersionNotFoundError",
     "instruction_length",
     "mnemonic",
     "opcode_tables",
+    "project_rom_prefixes",
+    "project_versions_dirpath",
+    "resolve_version_dirpath",
+    "resolve_version_dirpath_for_project",
+    "rom_prefix",
+    "rom_prefix_for_project",
 ]
