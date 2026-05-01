@@ -507,6 +507,85 @@ class TestCommentsCheck:
         assert result.exit_code != 0
         assert "SKIPPED" in result.output
 
+    def test_labels_apply_dry_run(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        driver_filepath = tmp_path / "driver.py"
+        driver_filepath.write_text(
+            "import py8dis\n"
+            "\n"
+            "# =================== Subroutines ===================\n"
+            'subroutine(0x8000, "init")\n'
+            "\n"
+            "# Code label renames\n"
+            'label(0x8010, "first")\n'
+            'label(0x8020, "second")\n'
+            "\n"
+            "# =================== End ===================\n"
+            "tail()\n"
+        )
+        renames_filepath = tmp_path / "renames.toml"
+        renames_filepath.write_text(
+            'renames = [\n'
+            '  { addr = 0x8010, name = "renamed_first" },\n'
+            '  { addr = 0x8030, name = "new_label" },\n'
+            ']\n'
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "labels", "apply",
+                str(driver_filepath), str(renames_filepath),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Dry-run output is a diff; the original file is unchanged.
+        assert "renamed_first" in result.output
+        assert "new_label" in result.output
+        # Driver file untouched.
+        assert "renamed_first" not in driver_filepath.read_text()
+
+    def test_labels_apply_in_place(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        driver_filepath = tmp_path / "driver.py"
+        driver_filepath.write_text(
+            "# Code label renames\n"
+            'label(0x8010, "first")\n'
+        )
+        renames_filepath = tmp_path / "renames.toml"
+        renames_filepath.write_text(
+            'renames = [{ addr = 0x8010, name = "renamed" }]\n'
+        )
+        result = runner.invoke(
+            main,
+            [
+                "labels", "apply",
+                str(driver_filepath), str(renames_filepath),
+                "--in-place",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "renamed" in driver_filepath.read_text()
+
+    def test_labels_apply_missing_renames_array(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        driver_filepath = tmp_path / "driver.py"
+        driver_filepath.write_text("# Code label renames\n")
+        renames_filepath = tmp_path / "renames.toml"
+        renames_filepath.write_text("# empty\n")
+        result = runner.invoke(
+            main,
+            [
+                "labels", "apply",
+                str(driver_filepath), str(renames_filepath),
+            ],
+        )
+        assert result.exit_code != 0
+        assert "renames" in result.output
+
     def test_lint_annotations(self, tmp_path: Path) -> None:
         runner = CliRunner()
         _init_project(tmp_path, runner, "demo", "demo")

@@ -44,6 +44,7 @@ from .api.lint import (
     address_ranges_from_data,
     extract_annotations,
 )
+from .api.rename_labels import apply_renames_to_lines
 from .api.promote import analyze_labels
 from .api.paths import project_rom_prefixes, project_versions_dirpath
 from .api.project import (
@@ -992,6 +993,103 @@ def labels_classify(version_id: str, category: str | None) -> Reports:
             parent=record["parent_sub_name"] or "",
         )
     return Reports(labels=Report(data=table))
+
+
+@labels.command(
+    "apply",
+    help=(
+        "Apply a renames TOML file to a py8dis driver script. The "
+        "TOML file should declare a `renames` array of inline "
+        "tables, each with `addr` (integer) and `name` (string). "
+        "Writes the rewritten driver to stdout by default; pass "
+        "--in-place or --output to write to a file."
+    ),
+)
+@click.argument(
+    "driver_filepath",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.argument(
+    "renames_filepath",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--in-place",
+    is_flag=True,
+    help="Rewrite DRIVER_FILEPATH in place.",
+)
+@click.option(
+    "--output",
+    "output_filepath",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write the rewritten driver to OUTPUT instead of stdout.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show a unified diff of the changes without writing anything.",
+)
+def labels_apply(
+    driver_filepath: Path,
+    renames_filepath: Path,
+    in_place: bool,
+    output_filepath: Path | None,
+    dry_run: bool,
+) -> None:
+    import difflib
+    import tomllib
+
+    if sum([in_place, output_filepath is not None, dry_run]) > 1:
+        raise click.UsageError(
+            "pass at most one of --in-place, --output, --dry-run"
+        )
+
+    renames_data = tomllib.loads(renames_filepath.read_text())
+    rename_entries = renames_data.get("renames")
+    if not rename_entries:
+        raise click.UsageError(
+            f"no `renames` array found in {renames_filepath}"
+        )
+
+    rename_map: dict[int, str] = {}
+    for entry in rename_entries:
+        if "addr" not in entry or "name" not in entry:
+            raise click.UsageError(
+                f"renames entry missing addr or name: {entry}"
+            )
+        rename_map[int(entry["addr"])] = str(entry["name"])
+
+    original = driver_filepath.read_text()
+    lines = original.splitlines(keepends=True)
+    try:
+        new_lines = apply_renames_to_lines(lines, rename_map)
+    except LookupError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    new_text = "".join(new_lines)
+
+    if dry_run:
+        diff = difflib.unified_diff(
+            original.splitlines(keepends=True),
+            new_lines,
+            fromfile=str(driver_filepath),
+            tofile=f"{driver_filepath} (renamed)",
+        )
+        click.echo("".join(diff), nl=False)
+        return
+    if in_place:
+        driver_filepath.write_text(new_text)
+        click.echo(
+            f"Wrote {len(rename_map)} rename(s) to {driver_filepath}"
+        )
+        return
+    if output_filepath is not None:
+        output_filepath.write_text(new_text)
+        click.echo(
+            f"Wrote {len(rename_map)} rename(s) to {output_filepath}"
+        )
+        return
+    click.echo(new_text, nl=False)
 
 
 @main.command(
