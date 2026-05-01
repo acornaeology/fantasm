@@ -25,22 +25,22 @@ Line counts and diff-line counts (versus NFS) collected on 2026-05-01.
 | `mos6502.py`     | 152 |   97 |  98 |   99 | NFS adds CMOS (65C02) overrides + dispatcher | ✅ done — ROM_BASE/ROM_SIZE moved out, set up for `[rom] cpu` config |
 | `paths.py`       |  28 |   32 |  32 |   36 | Project-specific PREFIX; NFS supports two   | ✅ done — refactored against ProjectContext; `[versions]` config |
 | `asm_extract.py` | 105 |  100 | 100 |  100 | NFS has 5 extra lines (relocation indexing) | ✅ done — typed extract_section() returning AsmSection |
-| `audit.py`       | 828 |  828 | 828 |  828 | **Byte-identical**                          | ⚠️ partial — pure-logic + load_subroutines + find_undeclared_subs ported; `format_*` and top-level `audit()` deferred to CLI integration |
-| `backfill.py`    | 621 |  621 | 621 |  621 | **Byte-identical**                          | ⏳ pending |
+| `audit.py`       | 828 |  828 | 828 |  828 | **Byte-identical**                          | ⚠️ partial — pure-logic + load_subroutines + find_undeclared_subs ported; `format_*` and top-level `audit()` deferred to CLI |
+| `backfill.py`    | 621 |  621 | 621 |  621 | **Byte-identical**                          | ⚠️ partial — build_confidence_map + parse_annotations + translate_* ported; VERSION_CHAIN and chained_map deferred (NFS-specific data → fantasm.toml) |
 | `cfg.py`         | 415 |  415 | 415 |  415 | NFS = ADFS = TUBE; EBR has 4 diff lines     | ⚠️ partial — build_call_graph + resolve_sub_node ported with KEY FIX (uses audit.build_memory_regions(meta), not hardcoded NFS regions); format_* deferred |
 | `comment_check.py` | 677 |  677 | 677 |  677 | **Byte-identical**                        | ⚠️ partial — every check function + run_checks ported; format_findings + comment_check() deferred |
-| `compare.py`     | 470 |  319 | 319 |  319 | NFS has ~150 extra lines of capability      | ⏳ pending |
+| `compare.py`     | 470 |  319 | 319 |  319 | NFS has ~150 extra lines of capability      | ✅ done — Instruction/RomHeader dataclasses, parse_rom_header, disassemble_linear, compare_roms; rom_base parameterised, "NFS" hardcode removed |
 | `context.py`     | 459 |  459 | 459 |  459 | **Byte-identical**                          | ⚠️ partial — compute_call_depths ported; generate_context (file IO) deferred |
 | `insert_point.py`| 183 |  183 | 183 |  183 | **Byte-identical**                          | ⚠️ partial — parse_subroutine_declarations + find_main_block + new compute_insert_point ported; print/IO wrapper deferred |
 | `labels.py`      | 495 |  495 | 495 |  495 | **Byte-identical**                          | ⚠️ partial — classify_labels + sort_labels + collect_auto_labels (was `_collect_auto_labels`); generate_labels file-IO deferred |
-| `lint.py`        | 555 |  522 | 522 |  492 | NFS most capable; check others for unique rules | ⏳ pending |
+| `lint.py`        | 555 |  522 | 522 |  492 | NFS most capable; check others for unique rules | ⚠️ partial — extract_annotations (multi-line aware, with names) + valid_addresses_from_data + address_ranges_from_data + markdown helpers ported; ROM size now a parameter; lint_*() and lint() top-level deferred |
 | `rename_labels.py`| 284 |  284 | 284 |  284 | **Byte-identical**                          | ⚠️ partial — parse_label_declarations + find_rename_section + find_insert_position + new apply_renames_to_lines pure transformer; rename_labels() and show_sub_labels() file-IO deferred |
 | `verify.py`      | 102 |  102 | 102 |  112 | Trivial diffs (project-name strings); TUBE has 24 extra | ✅ done — verify_round_trip() returns VerifyResult dataclass; BeebasmNotFoundError raised |
-| `cli.py`         | 417 |  401 | 445 |  358 | All diverge — Click sub-commands             | ⏳ pending — designing fresh hierarchical CLI |
-| `promote.py`     |   – |  235 | 235 |    – | ADFS+EBR identical; not in NFS or TUBE       | ⏳ pending |
-| `find_shared.py` |   – |    – | 254 |    – | EBR only                                     | ⏳ pending |
-| `blockmatch.py`  | 299 |    – |   – |    – | NFS only                                     | ⏳ pending |
-| `fingerprint.py` | 112 |    – |   – |    – | NFS only                                     | ⏳ pending |
+| `cli.py`         | 417 |  401 | 445 |  358 | All diverge — Click sub-commands             | ⏳ in progress — `fantasm project` group landed; rest under design |
+| `promote.py`     |   – |  235 | 235 |    – | ADFS+EBR identical; not in NFS or TUBE       | ⚠️ partial — analyze_labels + load_and_analyze_labels ported; format_promote_report deferred to CLI |
+| `find_shared.py` |   – |    – | 254 |    – | EBR only                                     | ⚠️ partial — sweep_opcodes / find_matching_spans / parse_rom_spec / load_rom ported; report_matches + argparse main deferred |
+| `blockmatch.py`  | 299 |    – |   – |    – | NFS only                                     | ✅ done — primary + supplementary opcode mapping; rom_base parameterised |
+| `fingerprint.py` | 112 |    – |   – |    – | NFS only                                     | ✅ done — opcode_fingerprint, fingerprint_blocks, find_duplicate_blocks |
 
 ### Porting strategy that emerged
 
