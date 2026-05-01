@@ -307,6 +307,141 @@ class TestEffectiveExternalRegions:
             graph.effective_external_regions("nonexistent")
 
 
+# --- reloc_pairs_for_edge -----------------------------------------
+
+
+class TestRelocPairsForEdge:
+    def test_simple_pairing(self) -> None:
+        # Both versions have the same reloc-block geometry; just the
+        # source addresses differ.
+        graph = VersionGraph(
+            [
+                Version(
+                    id="3.34",
+                    parents=(),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9307, dest=0x0016, length=0x61),
+                        RelocBlock(source=0x934C, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+                Version(
+                    id="3.34B",
+                    parents=("3.34",),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9308, dest=0x0016, length=0x61),
+                        RelocBlock(source=0x934D, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+            ]
+        )
+        edge = graph.find_path("3.34", "3.34B")[0]
+        pairs = graph.reloc_pairs_for_edge(edge)
+        assert pairs == [
+            (0x9307, 0x9308, 0x0016, 0x61),
+            (0x934C, 0x934D, 0x0400, 0x100),
+        ]
+
+    def test_independent_of_traversal_direction(self) -> None:
+        graph = VersionGraph(
+            [
+                Version(
+                    id="a",
+                    parents=(),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9000, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+                Version(
+                    id="b",
+                    parents=("a",),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9010, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+            ]
+        )
+        # Walking forward (parent -> child).
+        forward_edge = graph.find_path("a", "b")[0]
+        forward_pairs = graph.reloc_pairs_for_edge(forward_edge)
+        # Walking backward (child -> parent).
+        backward_edge = graph.find_path("b", "a")[0]
+        backward_pairs = graph.reloc_pairs_for_edge(backward_edge)
+        # Tuples are oriented (parent, child) regardless of direction.
+        assert forward_pairs == backward_pairs == [(0x9000, 0x9010, 0x0400, 0x100)]
+
+    def test_unmatched_blocks_dropped(self) -> None:
+        # Parent has a block at dest 0x0500 that the child doesn't.
+        graph = VersionGraph(
+            [
+                Version(
+                    id="parent",
+                    parents=(),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9000, dest=0x0400, length=0x100),
+                        RelocBlock(source=0x9100, dest=0x0500, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+                Version(
+                    id="child",
+                    parents=("parent",),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9010, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+            ]
+        )
+        edge = graph.find_path("parent", "child")[0]
+        pairs = graph.reloc_pairs_for_edge(edge)
+        # Only the matched block appears.
+        assert pairs == [(0x9000, 0x9010, 0x0400, 0x100)]
+
+    def test_empty_when_no_reloc_blocks(self) -> None:
+        graph = VersionGraph(
+            [_v("a"), _v("b", parents=("a",))]
+        )
+        edge = graph.find_path("a", "b")[0]
+        assert graph.reloc_pairs_for_edge(edge) == []
+
+    def test_duplicate_keys_paired_positionally(self) -> None:
+        # Both versions have two reloc blocks with the same (dest, length)
+        # — pair them off in order.
+        graph = VersionGraph(
+            [
+                Version(
+                    id="a",
+                    parents=(),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9000, dest=0x0400, length=0x100),
+                        RelocBlock(source=0x9100, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+                Version(
+                    id="b",
+                    parents=("a",),
+                    reloc_blocks=(
+                        RelocBlock(source=0x9010, dest=0x0400, length=0x100),
+                        RelocBlock(source=0x9110, dest=0x0400, length=0x100),
+                    ),
+                    explicit_regions=None,
+                ),
+            ]
+        )
+        edge = graph.find_path("a", "b")[0]
+        pairs = graph.reloc_pairs_for_edge(edge)
+        # Sorted by parent source: (0x9000, 0x9010, ...) then (0x9100, 0x9110, ...).
+        assert pairs == [
+            (0x9000, 0x9010, 0x0400, 0x100),
+            (0x9100, 0x9110, 0x0400, 0x100),
+        ]
+
+
 # --- load_version_graph -------------------------------------------
 
 

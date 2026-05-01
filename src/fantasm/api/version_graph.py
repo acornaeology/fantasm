@@ -260,6 +260,51 @@ class VersionGraph:
         self.get(version_id)
         return _normalise_regions(self._project_external_regions)
 
+    def reloc_pairs_for_edge(
+        self, edge: Edge
+    ) -> list[tuple[int, int, int, int]]:
+        """Derive ``(src_parent, src_child, dest, length)`` tuples for ``edge``.
+
+        Reloc blocks are matched across the edge's two endpoints by
+        ``(dest, length)``. When either side has multiple blocks with
+        the same key (rare), they are paired off positionally in the
+        order they appear in each version's ``reloc_blocks`` list.
+        Blocks that exist on only one side are silently dropped — a
+        block whose ``dest``/``length`` differs across versions can't
+        contribute to opcode matching anyway.
+
+        Tuples are returned sorted by parent source address for
+        determinism. The order ``(src_parent, src_child, dest,
+        length)`` is independent of the edge's traversal direction;
+        callers walking ``child -> parent`` swap or invert the
+        resulting hop map themselves.
+        """
+        parent = self.get(edge.parent_id)
+        child = self.get(edge.child_id)
+
+        by_key_parent: dict[tuple[int, int], list[RelocBlock]] = {}
+        for block in parent.reloc_blocks:
+            by_key_parent.setdefault((block.dest, block.length), []).append(block)
+        by_key_child: dict[tuple[int, int], list[RelocBlock]] = {}
+        for block in child.reloc_blocks:
+            by_key_child.setdefault((block.dest, block.length), []).append(block)
+
+        result: list[tuple[int, int, int, int]] = []
+        for key, parent_blocks in by_key_parent.items():
+            child_blocks = by_key_child.get(key, [])
+            for parent_block, child_block in zip(parent_blocks, child_blocks):
+                result.append(
+                    (
+                        parent_block.source,
+                        child_block.source,
+                        key[0],
+                        key[1],
+                    )
+                )
+
+        result.sort(key=lambda t: t[0])
+        return result
+
     # -- Private ---------------------------------------------------
 
     def _build_adjacency(
