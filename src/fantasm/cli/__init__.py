@@ -19,6 +19,7 @@ from .comments import comments
 from .compare import compare
 from .context import context
 from .coverage import coverage
+from .data import data_group
 from .disassemble import disassemble
 from .fingerprint import fingerprint_cmd
 from .labels import labels
@@ -42,6 +43,7 @@ for _cmd in (
     compare,
     context,
     coverage,
+    data_group,
     disassemble,
     fingerprint_cmd,
     labels,

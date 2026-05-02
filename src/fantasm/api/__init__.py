@@ -62,6 +62,19 @@ from .bytes_search import (
     find_byte_pattern,
     parse_byte_pattern,
 )
+from .data_review import (
+    Classification,
+    CodeClassification,
+    DataRun,
+    PaddingClassification,
+    StringClassification,
+    classify_run_bytes,
+    find_classification_candidates,
+    find_data_runs,
+    looks_like_code,
+    looks_like_padding,
+    looks_like_string,
+)
 from .fingerprint import (
     find_duplicate_blocks,
     fingerprint_blocks,
