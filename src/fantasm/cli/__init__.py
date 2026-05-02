@@ -17,6 +17,7 @@ from .cfg import cfg
 from .comments import comments
 from .compare import compare
 from .context import context
+from .coverage import coverage
 from .disassemble import disassemble
 from .fingerprint import fingerprint_cmd
 from .labels import labels
@@ -38,6 +39,7 @@ for _cmd in (
     comments,
     compare,
     context,
+    coverage,
     disassemble,
     fingerprint_cmd,
     labels,

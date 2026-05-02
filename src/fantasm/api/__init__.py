@@ -123,11 +123,14 @@ from .version_graph import (
 )
 from .context import (
     CallSiteContext,
+    CoverageGroup,
+    CoverageReport,
     ExitPointContext,
     SubContext,
     UncommentedSubReport,
     analyse_uncommented_subs,
     compute_call_depths,
+    compute_coverage,
     extract_sub_context,
 )
 from .lint import (

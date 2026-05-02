@@ -304,12 +304,193 @@ def analyse_uncommented_subs(
     return results
 
 
+# --- Global inline-comment coverage ------------------------------
+
+
+@dataclass(frozen=True)
+class CoverageGroup:
+    """One row of a coverage breakdown.
+
+    Carries the (commented, total) counts for a contiguous slice of
+    the disassembly — a 0x100-byte ROM page or a single subroutine,
+    according to the breakdown the report was built with.
+    """
+
+    label: str
+    start_addr: int
+    end_addr: int           # inclusive
+    code_count: int
+    commented_count: int
+
+    @property
+    def percentage(self) -> float:
+        return (
+            100.0 * self.commented_count / self.code_count
+            if self.code_count
+            else 0.0
+        )
+
+
+@dataclass(frozen=True)
+class CoverageReport:
+    """Aggregate inline-comment coverage for a disassembly.
+
+    ``code_count`` / ``commented_count`` cover every code item in the
+    JSON; ``subroutine_count`` is the number of declared subroutines.
+    ``groups`` is empty for the top-level summary; populated when a
+    ``group_by`` was supplied to :func:`compute_coverage`.
+    """
+
+    code_count: int
+    commented_count: int
+    subroutine_count: int
+    groups: tuple[CoverageGroup, ...]
+    group_by: str | None
+
+    @property
+    def percentage(self) -> float:
+        return (
+            100.0 * self.commented_count / self.code_count
+            if self.code_count
+            else 0.0
+        )
+
+
+_COVERAGE_GROUP_BY_VALUES = ("page", "sub")
+
+
+def compute_coverage(
+    data: dict,
+    *,
+    audit_subs: Sequence[dict] | None = None,
+    group_by: str | None = None,
+) -> CoverageReport:
+    """Compute aggregate inline-comment coverage for ``data``.
+
+    ``data`` is a parsed py8dis JSON disassembly (the same shape
+    ``fantasm.cli_helpers.AnalysisContext.data`` produces). A code
+    item counts as "commented" when its ``comment_inline`` field is
+    non-empty; block-level ``comment_above`` / ``comment_below`` are
+    deliberately ignored — the metric of interest is per-instruction
+    inline density.
+
+    ``group_by`` is one of:
+
+    - ``None`` — only the global counts; ``groups`` is empty.
+    - ``"page"`` — group by 0x100-byte ROM page.
+    - ``"sub"`` — group by enclosing subroutine. ``audit_subs`` is
+      then required (typically passed from
+      :func:`fantasm.api.audit.load_subroutines`).
+
+    Other values raise ``ValueError``.
+    """
+    if group_by is not None and group_by not in _COVERAGE_GROUP_BY_VALUES:
+        raise ValueError(
+            f"unknown group_by {group_by!r}; "
+            f"valid values: {_COVERAGE_GROUP_BY_VALUES}"
+        )
+    if group_by == "sub" and audit_subs is None:
+        raise ValueError(
+            "group_by='sub' requires audit_subs (e.g. from "
+            "fantasm.api.audit.load_subroutines)"
+        )
+
+    code_items = [
+        item for item in data.get("items", [])
+        if item.get("type") == "code"
+    ]
+    code_count = len(code_items)
+    commented_count = sum(
+        1 for item in code_items if item.get("comment_inline")
+    )
+    subroutine_count = len(data.get("subroutines", []))
+
+    groups: tuple[CoverageGroup, ...]
+    if group_by == "page":
+        groups = _coverage_groups_by_page(code_items)
+    elif group_by == "sub":
+        assert audit_subs is not None  # narrowed by check above
+        groups = _coverage_groups_by_sub(audit_subs)
+    else:
+        groups = ()
+
+    return CoverageReport(
+        code_count=code_count,
+        commented_count=commented_count,
+        subroutine_count=subroutine_count,
+        groups=groups,
+        group_by=group_by,
+    )
+
+
+def _coverage_groups_by_page(
+    code_items: Sequence[dict],
+) -> tuple[CoverageGroup, ...]:
+    """Bucket code items by 0x100-byte page; one group per non-empty page."""
+    by_page: dict[int, list[dict]] = {}
+    for item in code_items:
+        page = item["addr"] >> 8
+        by_page.setdefault(page, []).append(item)
+
+    groups: list[CoverageGroup] = []
+    for page in sorted(by_page):
+        bucket = by_page[page]
+        start = page << 8
+        end = start + 0xFF
+        commented = sum(1 for item in bucket if item.get("comment_inline"))
+        groups.append(
+            CoverageGroup(
+                label=f"&{start:04X}-&{end:04X}",
+                start_addr=start,
+                end_addr=end,
+                code_count=len(bucket),
+                commented_count=commented,
+            )
+        )
+    return tuple(groups)
+
+
+def _coverage_groups_by_sub(
+    audit_subs: Sequence[dict],
+) -> tuple[CoverageGroup, ...]:
+    """One group per declared subroutine, in start-address order."""
+    groups: list[CoverageGroup] = []
+    for sub in sorted(audit_subs, key=lambda s: s["addr"]):
+        code_items = [
+            item for item in sub.get("items", [])
+            if item.get("type") == "code"
+        ]
+        if not code_items:
+            # A sub with no code items (data-only or mis-declared) still
+            # earns a row, with zero counts — silently dropping it would
+            # hide real "this sub has nothing to comment" findings.
+            start = sub["addr"]
+            end = start
+        else:
+            start = code_items[0]["addr"]
+            end = code_items[-1]["addr"]
+        commented = sum(1 for item in code_items if item.get("comment_inline"))
+        groups.append(
+            CoverageGroup(
+                label=sub.get("name", f"sub_c{sub['addr']:04x}"),
+                start_addr=start,
+                end_addr=end,
+                code_count=len(code_items),
+                commented_count=commented,
+            )
+        )
+    return tuple(groups)
+
+
 __all__ = [
     "CallSiteContext",
+    "CoverageGroup",
+    "CoverageReport",
     "ExitPointContext",
     "SubContext",
     "UncommentedSubReport",
     "analyse_uncommented_subs",
     "compute_call_depths",
+    "compute_coverage",
     "extract_sub_context",
 ]
