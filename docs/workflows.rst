@@ -213,7 +213,7 @@ I want to know what's in this byte run
 --------------------------------------
 
 The companion to ``data runs``. Once the listing flags a long
-unannotated byte run, ``fantasm data classify`` applies three
+unannotated byte run, ``fantasm data classify`` applies four
 heuristic classifiers to it:
 
 * **Padding** — repeating-byte patterns of length 1–4 (the
@@ -224,6 +224,13 @@ heuristic classifiers to it:
 * **String** — runs of printable ASCII (0x20–0x7E plus tab / CR /
   LF) optionally terminated by a null byte. Catches embedded
   text that py8dis hasn't recognised as a string.
+* **High-byte address table** — runs where every byte falls in
+  the project's ROM-page band (e.g. 0x80–0xBF for a 16 KB
+  sideways ROM at &8000). Catches the high-byte halves of
+  PHA/PHA/RTS-style dispatch tables, which would otherwise be
+  mis-read as long valid-code sweeps because most opcodes in
+  0x80–0xBF exist as real 6502 instructions. The band is derived
+  from the JSON's ``meta.load_addr`` / ``meta.end_addr``.
 * **Code** — every starting alignment is tried; the longest sweep
   consuming valid 6502 opcode lengths wins. Catches code that
   py8dis emitted as bytes (often because no ``entry()`` reached
@@ -238,17 +245,18 @@ Run it:
 
 The orchestrator walks every run of byte-typed items left to
 right, applying the classifiers in priority order **padding →
-string → code**: the first classifier to claim bytes at the
-cursor wins, the cursor advances past the match, then the next
-round runs. Output is sorted by length descending so the
-strongest candidates surface first.
+string → hi_bytes_table → code**: the first classifier to claim
+bytes at the cursor wins, the cursor advances past the match,
+then the next round runs. Output is sorted by length descending
+so the strongest candidates surface first.
 
-Confidence is exact (1.0) for padding and pure-printable
-strings; for code it is a coarse length heuristic
-(``min(length / 32, 1.0)``) — a nudge towards "this is more
-likely real code" rather than a guarantee. The candidate list is
-*advisory*; treat it as a guide for which byte runs deserve a
-closer look, not as a directive to reclassify automatically.
+Confidence is exact (1.0) for padding, pure-printable strings,
+and high-byte address tables; for code it is a coarse length
+heuristic (``min(length / 32, 1.0)``) — a nudge towards "this is
+more likely real code" rather than a guarantee. The candidate
+list is *advisory*; treat it as a guide for which byte runs
+deserve a closer look, not as a directive to reclassify
+automatically.
 
 Use ``--target-type string`` (or word) to also re-examine items
 py8dis already classified as strings/words — useful for sanity

@@ -127,9 +127,10 @@ def data_runs(
 @data_group.command(
     "classify",
     help=(
-        "Apply heuristic classifiers (padding / string / code) to "
-        "runs of byte-typed data items, listing spans that might "
-        "be reclassifiable as something more specific."
+        "Apply heuristic classifiers (padding / string / "
+        "hi_bytes_table / code) to runs of byte-typed data items, "
+        "listing spans that might be reclassifiable as something "
+        "more specific."
     ),
 )
 @click.argument("version_id")
@@ -169,6 +170,18 @@ def data_runs(
     show_default=True,
     help="Minimum length of a repeating-pattern run to flag as padding.",
 )
+@click.option(
+    "--min-hi-bytes",
+    type=click.IntRange(1, 1000),
+    default=8,
+    show_default=True,
+    help=(
+        "Minimum length of a contiguous run of bytes in the project's "
+        "ROM-page range to flag as a high-byte address table. The "
+        "range is derived from the JSON's meta.load_addr / "
+        "meta.end_addr."
+    ),
+)
 @report_output(reports={
     "candidates": "Reclassification candidates, longest first",
 })
@@ -179,6 +192,7 @@ def data_classify(
     min_string: int,
     min_code: int,
     min_padding: int,
+    min_hi_bytes: int,
 ) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
     if cpu is None:
@@ -188,13 +202,24 @@ def data_classify(
         tuple(t.lower() for t in target_types) if target_types else ("byte",)
     )
 
+    # Derive the project's ROM-page range from JSON metadata so the
+    # hi_bytes_table classifier knows what "in band" means.
+    meta = actx.data.get("meta", {}) or {}
+    load_addr = meta.get("load_addr")
+    end_addr = meta.get("end_addr")
+    rom_page_range: tuple[int, int] | None = None
+    if load_addr is not None and end_addr is not None and end_addr > load_addr:
+        rom_page_range = (load_addr >> 8, (end_addr - 1) >> 8)
+
     candidates = find_classification_candidates(
         actx.data["items"],
         cpu=cpu,
         target_types=types,
+        rom_page_range=rom_page_range,
         min_string=min_string,
         min_code=min_code,
         min_padding=min_padding,
+        min_hi_bytes=min_hi_bytes,
     )
 
     table = (

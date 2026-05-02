@@ -176,6 +176,24 @@ class PaddingClassification:
     confidence: float
 
 
+@dataclass(frozen=True)
+class HiBytesTableClassification:
+    """A run of bytes all in the project's ROM-page range.
+
+    The high-byte halves of PHA/PHA/RTS-style dispatch tables
+    look like this: every entry's high byte is a ROM page number,
+    so the contiguous run sits entirely inside the band
+    ``rom_base >> 8`` .. ``(rom_end - 1) >> 8``. Such runs happen
+    to decode as long sequences of "valid" 6502 instructions
+    (because most opcodes in the 0x80-0xBF range exist), which
+    the code classifier would otherwise falsely flag as code.
+    """
+    start_offset: int
+    length: int
+    rom_page_range: tuple[int, int]
+    confidence: float
+
+
 # Bytes that count as "printable" for string detection: standard
 # 0x20-0x7E plus the common whitespace controls. 0x00 is treated
 # as a string terminator (allowed once at the end of a run).
@@ -227,6 +245,58 @@ def looks_like_string(
                 )
         # Advance past this region.
         i = max(run_end, i + 1)
+    return best
+
+
+def looks_like_hi_bytes_table(
+    span: bytes,
+    *,
+    rom_page_range: tuple[int, int],
+    min_length: int = 8,
+) -> HiBytesTableClassification | None:
+    """Find the longest run of bytes all in ``rom_page_range``.
+
+    ``rom_page_range`` is an inclusive ``(low, high)`` tuple of byte
+    values — typically derived from the project's ROM extents
+    (e.g. ``(0x80, 0xBF)`` for a 16 KB BBC sideways ROM at &8000,
+    ``(0xE0, 0xFF)`` for the Acorn Econet Bridge at &E000). A
+    contiguous run of bytes all within this band is a strong
+    signal of a high-byte address table — the "lo bytes / hi
+    bytes" half of a PHA/PHA/RTS dispatch.
+
+    Such runs happen to decode as long stretches of "valid"
+    6502 instructions (most opcodes in 0x80-0xBF exist), which is
+    what makes :func:`looks_like_code` mis-fire on them. Running
+    this classifier first in the priority chain claims the bytes
+    before the code classifier sees them.
+
+    Confidence is 1.0 for an exact in-band run.
+    """
+    if len(span) < min_length:
+        return None
+
+    lo, hi = rom_page_range
+    best: HiBytesTableClassification | None = None
+    n = len(span)
+    i = 0
+    while i < n:
+        if lo <= span[i] <= hi:
+            j = i + 1
+            while j < n and lo <= span[j] <= hi:
+                j += 1
+            run_length = j - i
+            if run_length >= min_length and (
+                best is None or run_length > best.length
+            ):
+                best = HiBytesTableClassification(
+                    start_offset=i,
+                    length=run_length,
+                    rom_page_range=rom_page_range,
+                    confidence=1.0,
+                )
+            i = j
+        else:
+            i += 1
     return best
 
 
@@ -348,9 +418,11 @@ def find_classification_candidates(
     *,
     cpu: str = "6502",
     target_types: Iterable[str] = ("byte",),
+    rom_page_range: tuple[int, int] | None = None,
     min_string: int = 4,
     min_code: int = 8,
     min_padding: int = 4,
+    min_hi_bytes: int = 8,
 ) -> list[Classification]:
     """Walk runs of target-type items and surface reclassification hints.
 
@@ -358,9 +430,16 @@ def find_classification_candidates(
     ``target_types`` (default ``("byte",)`` — the catch-all bucket
     py8dis emits for unclassified data), concatenate the run's
     bytes and apply the classifiers in priority order:
-    **padding → string → code**. The first classifier to claim
-    bytes at a given offset wins; the cursor advances past the
-    match before the next classifier runs.
+    **padding → string → hi_bytes_table → code**. The first
+    classifier to claim bytes at a given offset wins; the cursor
+    advances past the match before the next classifier runs.
+
+    The ``hi_bytes_table`` step runs only when ``rom_page_range``
+    is provided (typically derived by the caller from the JSON's
+    ``meta.load_addr`` / ``meta.end_addr``). It catches runs of
+    bytes all in the project's ROM-page band — the high-byte
+    halves of dispatch tables, which would otherwise be misread
+    as long valid-code sweeps by the code classifier.
 
     Returns one :class:`Classification` per claimed span, sorted
     by length descending so the most-interesting candidates
@@ -386,9 +465,11 @@ def find_classification_candidates(
                 bytes(run_bytes),
                 run_addr=run_addr,
                 cpu=cpu,
+                rom_page_range=rom_page_range,
                 min_string=min_string,
                 min_code=min_code,
                 min_padding=min_padding,
+                min_hi_bytes=min_hi_bytes,
             )
         )
         current_run.clear()
@@ -409,16 +490,20 @@ def classify_run_bytes(
     *,
     run_addr: int = 0,
     cpu: str = "6502",
+    rom_page_range: tuple[int, int] | None = None,
     min_string: int = 4,
     min_code: int = 8,
     min_padding: int = 4,
+    min_hi_bytes: int = 8,
 ) -> list[Classification]:
-    """Apply padding → string → code classifiers across ``span``.
+    """Apply padding → string → hi_bytes_table → code classifiers across ``span``.
 
     Walks ``span`` left-to-right, calling each classifier in
     priority order at the current cursor position. The first
     classifier that returns a match consumes those bytes; the
-    cursor advances past the match before the next round.
+    cursor advances past the match before the next round. The
+    hi_bytes_table classifier is skipped when ``rom_page_range``
+    is ``None``.
 
     Returned :class:`Classification` ``addr`` values are
     ``run_addr + match_offset`` so callers can plot the findings
@@ -445,6 +530,19 @@ def classify_run_bytes(
             ))
             cursor += string.length
             continue
+
+        if rom_page_range is not None:
+            hi_table = looks_like_hi_bytes_table(
+                remainder,
+                rom_page_range=rom_page_range,
+                min_length=min_hi_bytes,
+            )
+            if hi_table is not None and hi_table.start_offset == 0:
+                findings.append(_hi_bytes_table_to_classification(
+                    hi_table, run_addr + cursor, remainder
+                ))
+                cursor += hi_table.length
+                continue
 
         code = looks_like_code(remainder, cpu=cpu, min_length=min_code)
         if code is not None and code.start_offset == 0:
@@ -515,16 +613,35 @@ def _code_to_classification(
     )
 
 
+def _hi_bytes_table_to_classification(
+    h: HiBytesTableClassification, addr: int, span: bytes
+) -> Classification:
+    lo, hi = h.rom_page_range
+    sample = " ".join(f"{b:02X}" for b in span[:min(h.length, 6)])
+    suffix = " …" if h.length > 6 else ""
+    return Classification(
+        addr=addr,
+        length=h.length,
+        kind="hi_bytes_table",
+        confidence=h.confidence,
+        preview=(
+            f"{h.length} bytes in &{lo:02X}..&{hi:02X} (sample: {sample}{suffix})"
+        ),
+    )
+
+
 __all__ = [
     "Classification",
     "CodeClassification",
     "DataRun",
+    "HiBytesTableClassification",
     "PaddingClassification",
     "StringClassification",
     "classify_run_bytes",
     "find_classification_candidates",
     "find_data_runs",
     "looks_like_code",
+    "looks_like_hi_bytes_table",
     "looks_like_padding",
     "looks_like_string",
 ]

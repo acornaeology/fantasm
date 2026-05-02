@@ -12,7 +12,7 @@ from fantasm.cli import main
 from ._helpers import add_version, init_project
 
 
-def _setup(tmp_path: Path, items, subroutines=()):
+def _setup(tmp_path: Path, items, subroutines=(), *, meta=None):
     """Boot a demo project and write a JSON disassembly with the given items."""
     runner = CliRunner()
     init_project(tmp_path, runner, "demo", "demo")
@@ -23,7 +23,7 @@ def _setup(tmp_path: Path, items, subroutines=()):
     json_filepath.parent.mkdir(exist_ok=True)
     json_filepath.write_text(
         json.dumps({
-            "meta": {"load_addr": 0x8000, "end_addr": 0x8200},
+            "meta": meta or {"load_addr": 0x8000, "end_addr": 0x8200},
             "items": list(items),
             "subroutines": list(subroutines),
         })
@@ -180,6 +180,33 @@ def test_data_classify_target_type_override(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Embedded" in result.output
+
+
+def test_data_classify_flags_hi_bytes_table(tmp_path: Path) -> None:
+    # 16 KB sideways ROM at &8000-&BFFF — high-byte band is 0x80-0xBF.
+    # A byte run inside that band would otherwise be claimed as
+    # `code` by the orchestrator (every byte is a valid 6502
+    # opcode); the new hi_bytes_table classifier takes priority.
+    runner = _setup(
+        tmp_path,
+        meta={"load_addr": 0x8000, "end_addr": 0xC000},
+        items=[{
+            "addr": 0x8A2F, "type": "byte",
+            "bytes": [0x96, 0x8E, 0x95, 0xA0, 0x88, 0xB0,
+                      0xA4, 0x8A, 0x95, 0xA8, 0x90, 0xA6],
+        }],
+    )
+    result = runner.invoke(
+        main,
+        ["--project-root", str(tmp_path),
+         "data", "classify", "1.0", "--as", "tsv"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "hi_bytes_table" in result.output
+    # The 12-byte run in 0x80-0xBF range is not flagged as code.
+    assert "code\t" not in result.output
+    # The preview includes the band derived from JSON meta.
+    assert "&80..&BF" in result.output
 
 
 def test_data_classify_help() -> None:

@@ -10,6 +10,7 @@ from fantasm.api.data_review import (
     find_classification_candidates,
     find_data_runs,
     looks_like_code,
+    looks_like_hi_bytes_table,
     looks_like_padding,
     looks_like_string,
 )
@@ -269,6 +270,69 @@ class TestLooksLikePadding:
         assert looks_like_padding(b"AB\xFF\xFF\xFF\xFF\xFF\xFF") is None
 
 
+# --- looks_like_hi_bytes_table -----------------------------------
+
+
+class TestLooksLikeHiBytesTable:
+    def test_clean_dispatch_high_half(self) -> None:
+        # The motivating example from the issue: high-half slice of a
+        # PHA/PHA/RTS dispatch table — every byte in the 0x80-0xBF
+        # band of a 16 KB sideways ROM at &8000.
+        span = bytes.fromhex("8E8E8E8E8E8E8F9596989898B098989EA0A1B7")
+        result = looks_like_hi_bytes_table(
+            span, rom_page_range=(0x80, 0xBF)
+        )
+        assert result is not None
+        assert result.start_offset == 0
+        assert result.length == len(span)
+        assert result.rom_page_range == (0x80, 0xBF)
+        assert result.confidence == 1.0
+
+    def test_below_min_length(self) -> None:
+        # Only 4 in-band bytes — below the default min_length of 8.
+        assert looks_like_hi_bytes_table(
+            b"\x80\x90\xA0\xB0", rom_page_range=(0x80, 0xBF)
+        ) is None
+
+    def test_no_in_band_bytes(self) -> None:
+        # All bytes outside the band — no match.
+        assert looks_like_hi_bytes_table(
+            b"\x00\x10\x20\x30\x40\x50\x60\x70",
+            rom_page_range=(0x80, 0xBF),
+        ) is None
+
+    def test_finds_longest_in_band_run(self) -> None:
+        # Two in-band runs separated by an out-of-band byte; the
+        # longest wins.
+        span = (
+            b"\x80\x81\x82\x83\x84\x85\x86\x87\x88"      # 9 in-band
+            b"\x00"                                          # break
+            b"\x90\x91\x92\x93"                              # 4 in-band — too short
+            b"\x00"                                          # break
+            b"\xA0\xA1\xA2\xA3\xA4\xA5\xA6\xA7\xA8\xA9\xAA"  # 11 in-band — wins
+        )
+        result = looks_like_hi_bytes_table(
+            span, rom_page_range=(0x80, 0xBF)
+        )
+        assert result is not None
+        # Run starts after the second break (offset 9 + 1 + 4 + 1 = 15).
+        assert result.start_offset == 15
+        assert result.length == 11
+
+    def test_band_outside_default(self) -> None:
+        # Tube Client at &F800 — band is (0xF8, 0xFF) — only those
+        # bytes match, not the wider 0x80-0xBF range.
+        span = bytes.fromhex("F8F9FAFBFCFDFEFF")
+        assert looks_like_hi_bytes_table(
+            span, rom_page_range=(0x80, 0xBF)
+        ) is None
+        result = looks_like_hi_bytes_table(
+            span, rom_page_range=(0xF8, 0xFF)
+        )
+        assert result is not None
+        assert result.length == 8
+
+
 # --- classify_run_bytes / find_classification_candidates ---------
 
 
@@ -302,6 +366,41 @@ class TestClassifyRunBytes:
         # The middle two bytes don't appear as findings.
         total_claimed = sum(f.length for f in findings)
         assert total_claimed == 16
+
+    def test_hi_bytes_table_wins_over_code(self) -> None:
+        # The motivating issue-#6 case: a slice of a dispatch table's
+        # high-half bytes happens to decode as valid 6502, so the
+        # code classifier would claim it without the hi_bytes_table
+        # step. Supplying rom_page_range should flip the result.
+        #
+        # The bytes here are picked to (1) all sit in 0x80-0xBF,
+        # (2) be a varied enough mix that no leading 1-4-byte run
+        # repeats cleanly (so padding doesn't claim the head), and
+        # (3) all be valid NMOS opcodes so the code classifier WOULD
+        # claim the whole span without the new fix.
+        span = bytes.fromhex("968E95A088B0A48A95A890A6")
+        without_range = classify_run_bytes(span, run_addr=0x8A2F)
+        assert any(f.kind == "code" for f in without_range)
+
+        with_range = classify_run_bytes(
+            span, run_addr=0x8A2F, rom_page_range=(0x80, 0xBF)
+        )
+        assert any(f.kind == "hi_bytes_table" for f in with_range)
+        assert not any(f.kind == "code" for f in with_range)
+        hi = next(f for f in with_range if f.kind == "hi_bytes_table")
+        assert hi.addr == 0x8A2F
+        assert hi.length == len(span)
+        assert "&80..&BF" in hi.preview
+
+    def test_hi_bytes_table_skipped_without_rom_range(self) -> None:
+        # When rom_page_range is None the classifier doesn't run —
+        # callers without project context get the original 0.6.0
+        # behaviour.
+        span = bytes.fromhex("968E95A088B0A48A95A890A6")
+        findings = classify_run_bytes(span, run_addr=0x8A2F)
+        # Falls through to code (or nothing); hi_bytes_table never
+        # appears.
+        assert not any(f.kind == "hi_bytes_table" for f in findings)
 
 
 class TestFindClassificationCandidates:
