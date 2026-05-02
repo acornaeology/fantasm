@@ -114,6 +114,12 @@ Fingerprinting (block-level deduplication)
 .. automodule:: fantasm.api.fingerprint
 
 
+Byte-signature search (literal + wildcard patterns)
+---------------------------------------------------
+
+.. automodule:: fantasm.api.bytes_search
+
+
 Cross-ROM shared-code matching
 ------------------------------
 

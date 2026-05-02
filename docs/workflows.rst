@@ -155,6 +155,33 @@ uncommented (your remaining work front).
    uv run fantasm cfg blocks 1.0 --uncommented-only --min-items 3
 
 
+I want a global comment-coverage snapshot
+-----------------------------------------
+
+Where ``context uncommented`` is a per-subroutine view, ``coverage``
+is the headline number across the whole disassembly: total code
+items, how many carry a ``comment_inline`` annotation, and the
+percentage. Useful for tracking annotation progress over time and
+for "how far through this version are we?" check-ins.
+
+.. code-block:: bash
+
+   uv run fantasm coverage 1.0
+   uv run fantasm coverage 1.0 --by page    # 256-byte breakdown
+   uv run fantasm coverage 1.0 --by sub     # per-subroutine breakdown
+
+The headline summary report carries the percentage plus the raw
+counts; ``--by`` adds a second report with one row per page or
+subroutine, sorted by start address. A subroutine with no code
+items emits a zero-count row rather than disappearing — the
+"this sub needs annotation" findings stay visible.
+
+Only ``comment_inline`` counts towards "commented"; block-level
+``comment_above`` / ``comment_below`` are intentionally excluded so
+the metric is the per-instruction-density one most useful for
+"what's still uncommented".
+
+
 I want to bring annotations from a known version to a new one
 -------------------------------------------------------------
 
@@ -208,6 +235,45 @@ between two versions:
 The map combines an LCS-derived "primary" mapping with a seed-and-
 extend "supplementary" pass that catches reordered blocks the LCS
 misses. Use ``--primary-only`` to see just the LCS mappings.
+
+
+I want to find a specific byte sequence in a ROM
+------------------------------------------------
+
+``fantasm bytes find`` is the natural complement to ``fingerprint``
+when you have an exact (or near-exact) byte sequence in mind and
+want to know whether it appears in a given ROM. Typical use cases:
+locating the call site of a known opcode + operand, confirming a
+particular routine has been relocated rather than removed, or
+asking whether the byte body of a deleted routine survives intact
+elsewhere in the image.
+
+.. code-block:: bash
+
+   # Find every occurrence of a literal three-byte sequence:
+   uv run fantasm bytes find 1.0 "4C B9 FF"
+
+   # ?? wildcards match any single byte. JSR + 16-bit operand:
+   uv run fantasm bytes find 1.0 "20 ?? ??"
+
+   # Cross-version presence check — the "is this gone in 4.21?" view:
+   uv run fantasm bytes find 4.18 "A9 00 8D 7E 02" --cross 4.21_variant_1
+
+Pattern grammar: hex pairs (lower or upper case) optionally
+separated by whitespace, with per-token ``$`` or ``0x`` prefixes
+tolerated; ``??`` (exactly two question marks) is the any-byte
+wildcard. ``"4C B9 FF"``, ``"4cb9ff"``, ``"$4C $?? $FF"``, and
+``"0x4C 0xb9 0xff"`` all parse as the same three-byte pattern.
+Nibble-level wildcards (``"4?"``) and patterns made entirely of
+wildcards are rejected — the latter would match every position.
+
+The ``matches`` report adds a ``Captures`` column when the pattern
+contains wildcards, showing the bytes the wildcards captured at
+each hit (in pattern order). For pure-literal patterns the column
+is suppressed. The ``summary`` report (populated when ``--cross``
+is used) gives one row per version with the match count and the
+first eight addresses — the at-a-glance "is this routine present
+across these releases?" view.
 
 
 I want to find duplicated code within a ROM
