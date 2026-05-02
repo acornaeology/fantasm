@@ -126,6 +126,12 @@ Data-declaration review and heuristic classification
 .. automodule:: fantasm.api.data_review
 
 
+Print-inline hook discovery
+---------------------------
+
+.. automodule:: fantasm.api.hooks
+
+
 Cross-ROM shared-code matching
 ------------------------------
 

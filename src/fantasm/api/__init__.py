@@ -92,6 +92,11 @@ from .find_shared import (
     parse_rom_spec,
     sweep_opcodes,
 )
+from .hooks import (
+    HookCandidate,
+    find_hook_candidates,
+    render_hook_subroutine_line,
+)
 from .suggest import (
     CommentSuggestion,
     DEFAULT_INSTRUCTION_HINTS,

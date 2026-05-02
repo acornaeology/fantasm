@@ -264,6 +264,67 @@ checks ("did py8dis get the boundaries right?"). The default
 ``--target-type byte`` is the dominant case.
 
 
+I want to find missing print-inline hooks
+-----------------------------------------
+
+A common cause of mysterious unannotated byte runs in Acorn-style
+ROMs is a missing py8dis ``hook_subroutine()`` for a print-inline
+helper. The shape: a routine that prints an inline string after
+its ``JSR`` (the bytes following each call site are
+"``EQUS "..."`` then a terminator then resume code"). Without the
+hook py8dis treats the resume code as raw bytes — and a single
+missing hook can leave dozens of mysterious byte runs strewn
+across the ROM.
+
+``fantasm hooks suggest`` flips the diagnostic. Instead of
+chasing each downstream byte run, it scans every JSR target and
+looks for the **shape at the call sites**: a string item
+followed by a byte run that decodes as valid 6502 code. Targets
+matching the signature at multiple call sites are almost
+certainly print-inline helpers waiting to be hooked.
+
+.. code-block:: bash
+
+   uv run fantasm hooks suggest 1.0
+   uv run fantasm hooks suggest 1.0 --min-call-sites 5     # only the strong-signal targets
+
+Two reports come back:
+
+- ``candidates`` — table form for human review: target address,
+  py8dis label if any, suggested hook kind (``stringz`` /
+  ``stringcr`` / ``stringhi`` / ``unknown``), matching call-site
+  count, total call-site count, confidence, and a sample of the
+  inline strings observed.
+- ``paste`` — paste-ready ``hook_subroutine()`` lines, one per
+  candidate, e.g.:
+
+  .. code-block:: python
+
+     hook_subroutine(0x928A, "print_inline_no_spool", stringcr_hook)  # 14 sites, conf=1.00
+
+  Drop these into your driver, regenerate, and the downstream
+  byte runs collapse into normal code.
+
+Hook-kind detection looks at the **last byte** of each call
+site's inline string item — py8dis includes the terminator
+inside the string's ``bytes``:
+
+* ``0x0D`` → ``stringcr_hook``
+* ``0x00`` → ``stringz_hook``
+* bit-7 set → ``stringhi_hook``
+* anything else → ``unknown`` (paste line emits ``<HOOK_FN>`` for
+  manual selection)
+
+Already-hooked targets are silent in the output: their post-call
+items are ``string`` then ``code``, not ``string`` then ``byte``,
+so they don't match the missing-hook signature. A clean ROM
+reports zero candidates. The default ``--min-call-sites 2`` plus
+``--min-confidence 0.5`` lets a target through when at least two
+call sites match the signature and at least half of all call
+sites match — the user's "5+ is almost certainly" threshold is a
+conservative ``--min-call-sites 5`` away.
+
+
 I want to bring annotations from a known version to a new one
 -------------------------------------------------------------
 

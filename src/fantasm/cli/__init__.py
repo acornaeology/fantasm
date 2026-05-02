@@ -22,6 +22,7 @@ from .coverage import coverage
 from .data import data_group
 from .disassemble import disassemble
 from .fingerprint import fingerprint_cmd
+from .hooks import hooks_group
 from .labels import labels
 from .lint import lint_annotations
 from .main import main
@@ -46,6 +47,7 @@ for _cmd in (
     data_group,
     disassemble,
     fingerprint_cmd,
+    hooks_group,
     labels,
     lint_annotations,
     project,
