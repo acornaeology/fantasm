@@ -131,6 +131,24 @@ Combine with the analysis-side commands:
 * ``fantasm audit undeclared`` — JSR / JMP targets that lack
   ``subroutine()`` declarations. Run this after large annotation
   passes.
+* ``fantasm audit placeholders`` — py8dis-auto-discovered routines
+  that the driver script has never named. py8dis traces JSR /
+  branch targets via code-flow and emits hex-tail placeholders
+  (``.sub_cXXXX``, ``.loop_cXXXX``, ``.lXXXX``, ``.cXXXX``) for
+  any address it discovers without an explicit declaration. They
+  are visible in ``output/<ver>.asm`` but never reach the JSON's
+  ``subroutines`` list, so ``audit summary`` and ``audit
+  undeclared`` can't see them. Use this command to drive a CI gate
+  ("zero placeholders before merge"):
+
+  .. code-block:: bash
+
+     uv run fantasm audit placeholders 1.0
+     uv run fantasm audit placeholders 1.0 --as json | jq '.placeholders | length'
+
+  ``audit summary`` also surfaces the same count under the
+  ``placeholders`` report block, so a single ``audit summary``
+  invocation can serve both purposes.
 
 
 I want to find the gaps in my annotation work

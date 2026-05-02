@@ -5,7 +5,13 @@ from __future__ import annotations
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
-from ..api.audit import ALL_FLAGS, end_type, find_sub, find_undeclared_subs
+from ..api.audit import (
+    ALL_FLAGS,
+    end_type,
+    find_placeholder_labels,
+    find_sub,
+    find_undeclared_subs,
+)
 from ..cli_helpers import analysis_context
 
 
@@ -24,7 +30,13 @@ def audit() -> None:
     type=click.Choice(ALL_FLAGS, case_sensitive=False),
     help="Restrict to subroutines carrying this flag.",
 )
-@report_output(reports={"summary": "Subroutine summary"})
+@report_output(reports={
+    "summary": "Subroutine summary",
+    "placeholders": (
+        "py8dis-auto-discovered routines still carrying hex-tail "
+        "placeholder names in the asm output"
+    ),
+})
 def audit_summary(version_id: str, flag: str | None) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
     subs = actx.audit_subs
@@ -54,7 +66,71 @@ def audit_summary(version_id: str, flag: str | None) -> Reports:
             items=f"{sub['code_count']}/{sub['data_count']}",
             flags=",".join(sorted(sub["flags"])) if sub["flags"] else "",
         )
-    return Reports(summary=Report(data=table))
+
+    placeholders_table = _build_placeholders_table(actx, version_id)
+
+    return Reports(
+        summary=Report(data=table),
+        placeholders=Report(data=placeholders_table),
+    )
+
+
+@audit.command(
+    "placeholders",
+    help=(
+        "List py8dis-auto-discovered routines still carrying hex-tail "
+        "placeholder names (e.g. .sub_cXXXX, .loop_cXXXX, .lXXXX, "
+        ".cXXXX) in the asm output. Each one is a routine that "
+        "py8dis traced via code-flow analysis but the driver script "
+        "has not declared with a meaningful name; they're invisible "
+        "to ``audit summary`` because they never reach the JSON's "
+        "``subroutines`` list. Exit code is non-zero only on "
+        "argument / I/O errors — use the row count for CI gating."
+    ),
+)
+@click.argument("version_id")
+@report_output(reports={"placeholders": "Placeholder labels"})
+def audit_placeholders(version_id: str) -> Reports:
+    actx = analysis_context(click.get_current_context(), version_id)
+    return Reports(placeholders=Report(
+        data=_build_placeholders_table(actx, version_id)
+    ))
+
+
+def _build_placeholders_table(actx, version_id: str) -> TableContent:
+    """Render the placeholder-labels table for one version.
+
+    Tolerates a missing asm file by emitting an empty table — that
+    way ``audit summary`` doesn't gain a hard dependency on a fresh
+    py8dis run, and a project without asm output simply reports
+    zero placeholders.
+    """
+    if actx.files.asm_filepath.exists():
+        labels = find_placeholder_labels(actx.asm_lines)
+    else:
+        labels = []
+    table = (
+        TableContent(
+            title=f"Placeholder labels in {version_id}",
+            description=(
+                f"{len(labels)} hex-tail placeholder name(s) — every "
+                "row is a py8dis-auto-discovered routine that the "
+                "driver hasn't named yet"
+            ),
+        )
+        .add_column("addr", "Addr")
+        .add_column("name", "Name")
+        .add_column("kind", "Kind")
+        .add_column("line", "Asm line")
+    )
+    for label in labels:
+        table.add_row(
+            addr=f"&{label.addr:04X}",
+            name=f".{label.name}",
+            kind=label.kind,
+            line=str(label.line_number),
+        )
+    return table
 
 
 @audit.command(

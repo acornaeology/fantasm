@@ -29,6 +29,7 @@ import json
 import re
 import warnings
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from .mos6502 import BRANCH_MNEMONICS, TERMINATING_MNEMONICS
@@ -465,11 +466,94 @@ def find_undeclared_subs(json_filepath: str | Path) -> list[dict]:
     return results
 
 
+# --- placeholder-label scanning ---------------------------------------
+#
+# py8dis auto-discovers routines via code-flow analysis (JSR / branch
+# targets) and, when the driver script doesn't declare them, emits
+# placeholder names ending in the address in lowercase hex:
+#
+#   .lXXXX        — pure auto-label (data-flow target)
+#   .cXXXX        — pure auto-label (code-flow target)
+#   .sub_cXXXX    — auto-discovered subroutine, no driver decl.
+#   .loop_cXXXX   — auto-discovered loop entry, no driver decl.
+#
+# These names are visible in ``output/<ver>.asm`` but never reach the
+# JSON's ``subroutines`` list — so the regular subroutine audit can't
+# flag them. Project CI needs an independent scan against the asm.
+
+# XXXX is exactly four lowercase hex digits. The optional ``([a-z]+_)``
+# prefix tolerates ``sub_`` and ``loop_`` (and anything similar py8dis
+# might add) without false-positiving on legitimate semantic names that
+# happen to end in hex-looking characters (e.g. ``.spool_tx_succeeded``
+# ends in ``ceeded`` — eight chars, not the right shape).
+_PLACEHOLDER_LABEL_RE = re.compile(
+    r"^\.(?P<prefix>[a-z]+_)?(?P<core>[lc])(?P<addr>[0-9a-f]{4})\s*$"
+)
+
+# Known prefixes → human-readable kind.
+_PLACEHOLDER_KIND = {
+    "": "auto-label",
+    "sub_": "sub-placeholder",
+    "loop_": "loop-placeholder",
+}
+
+
+@dataclass(frozen=True)
+class PlaceholderLabel:
+    """A py8dis-auto-discovered routine carrying a hex-tail placeholder.
+
+    These names are visible in ``output/<ver>.asm`` but never reach
+    the JSON's declared ``subroutines`` list, so the regular audit
+    can't flag them. ``addr`` is parsed from the hex tail of
+    ``name``.
+    """
+
+    name: str             # without the leading '.'
+    addr: int
+    kind: str             # one of `_PLACEHOLDER_KIND`'s values
+    line_number: int      # 1-based line in the asm file
+
+
+def find_placeholder_labels(
+    asm_lines: Iterable[str],
+) -> list[PlaceholderLabel]:
+    """Scan asm output for hex-tail placeholder labels.
+
+    Returns the list in line-number order. Each match is one of:
+
+    - ``.lXXXX`` / ``.cXXXX`` — pure auto-label (no prefix)
+    - ``.sub_cXXXX``           — auto-discovered subroutine
+    - ``.loop_cXXXX``          — auto-discovered loop entry
+
+    where ``XXXX`` is exactly four lowercase hex digits. Any other
+    prefix is reported as ``"auto-label"`` (the structural shape is
+    the same — only the convention differs).
+    """
+    results: list[PlaceholderLabel] = []
+    for line_number, raw in enumerate(asm_lines, start=1):
+        match = _PLACEHOLDER_LABEL_RE.match(raw.rstrip("\r\n"))
+        if not match:
+            continue
+        prefix = match.group("prefix") or ""
+        kind = _PLACEHOLDER_KIND.get(prefix, "auto-label")
+        results.append(
+            PlaceholderLabel(
+                name=f"{prefix}{match.group('core')}{match.group('addr')}",
+                addr=int(match.group("addr"), 16),
+                kind=kind,
+                line_number=line_number,
+            )
+        )
+    return results
+
+
 __all__ = [
     "ALL_FLAGS",
+    "PlaceholderLabel",
     "build_memory_regions",
     "end_type",
     "find_containing_sub",
+    "find_placeholder_labels",
     "find_sub",
     "find_undeclared_subs",
     "load_subroutines",

@@ -12,9 +12,11 @@ from fantasm.api.audit import (
     ALL_FLAGS,
     BRANCH_MNEMONICS,
     TERMINATING_MNEMONICS,
+    PlaceholderLabel,
     build_memory_regions,
     end_type,
     find_containing_sub,
+    find_placeholder_labels,
     find_sub,
     find_undeclared_subs,
     load_subroutines,
@@ -310,6 +312,93 @@ class TestFindUndeclaredSubs:
         assert len(candidates) == 1
         assert candidates[0]["addr"] == 0x8030
         assert candidates[0]["caller_count"] == 1
+
+
+class TestFindPlaceholderLabels:
+    def test_pure_auto_labels(self) -> None:
+        lines = [
+            "; some comment\n",
+            ".l944c\n",
+            "  lda #0\n",
+            ".c8032\n",
+            "  rts\n",
+        ]
+        labels = find_placeholder_labels(lines)
+        assert [(l.name, l.addr, l.kind, l.line_number) for l in labels] == [
+            ("l944c", 0x944C, "auto-label", 2),
+            ("c8032", 0x8032, "auto-label", 4),
+        ]
+
+    def test_sub_and_loop_placeholders(self) -> None:
+        lines = [
+            ".sub_c8a6c\n",
+            "  jsr foo\n",
+            ".loop_ca4fc\n",
+            "  bne loop_ca4fc\n",
+        ]
+        labels = find_placeholder_labels(lines)
+        assert [(l.name, l.kind) for l in labels] == [
+            ("sub_c8a6c", "sub-placeholder"),
+            ("loop_ca4fc", "loop-placeholder"),
+        ]
+
+    def test_legitimate_names_with_hex_like_tails_not_matched(self) -> None:
+        # Real-world false-positive risk: ``.spool_tx_succeeded``
+        # ends in five chars (``ceeded``) that all happen to be
+        # valid hex digits, but the prefix isn't ``[a-z]+_[lc]``.
+        # Similarly ``.osword_a2`` has only two trailing chars.
+        lines = [
+            ".spool_tx_succeeded\n",
+            ".osword_a2\n",
+            ".star_match_succeeded\n",
+            ".print_inline_no_spool\n",
+        ]
+        assert find_placeholder_labels(lines) == []
+
+    def test_uppercase_hex_not_matched(self) -> None:
+        # py8dis emits placeholders with lowercase hex; matching
+        # uppercase would catch unrelated semantic names like
+        # ``.cAVE`` or ``.lCD``. Stay strict.
+        assert find_placeholder_labels([".lABCD\n", ".cFFFF\n"]) == []
+
+    def test_short_or_long_hex_tails_not_matched(self) -> None:
+        # Exactly four hex digits — three or five would either be
+        # ambiguous (``.lAB``) or never produced (``.lABCDE``).
+        lines = [".l944\n", ".l944cd\n", ".sub_c123\n", ".sub_c12345\n"]
+        assert find_placeholder_labels(lines) == []
+
+    def test_indented_labels_not_matched(self) -> None:
+        # py8dis emits labels at column 0; an indented match would
+        # most likely be a comment or a string literal.
+        lines = ["  .l944c\n", "\t.sub_c8a6c\n"]
+        assert find_placeholder_labels(lines) == []
+
+    def test_trailing_whitespace_tolerated(self) -> None:
+        # Some emitters add trailing spaces or CR; the scanner
+        # should still match.
+        lines = [".l944c   \n", ".c8032\r\n"]
+        labels = find_placeholder_labels(lines)
+        assert [l.name for l in labels] == ["l944c", "c8032"]
+
+    def test_clean_asm_reports_zero(self) -> None:
+        # Acceptance: a fully-named disassembly produces zero rows.
+        lines = [
+            ".alpha\n",
+            "  rts\n",
+            ".beta\n",
+            "  rts\n",
+        ]
+        assert find_placeholder_labels(lines) == []
+
+    def test_returns_dataclass_instances(self) -> None:
+        [label] = find_placeholder_labels([".sub_c8a6c\n"])
+        assert isinstance(label, PlaceholderLabel)
+        assert label == PlaceholderLabel(
+            name="sub_c8a6c",
+            addr=0x8A6C,
+            kind="sub-placeholder",
+            line_number=1,
+        )
 
 
 def test_module_dunder_all_resolves() -> None:
