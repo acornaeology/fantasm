@@ -182,6 +182,80 @@ the metric is the per-instruction-density one most useful for
 "what's still uncommented".
 
 
+I want to review my data declarations
+-------------------------------------
+
+After the call graph and most subroutines are annotated, the
+standing question is: are the long ``EQUB``/``EQUW``/``EQUS``
+runs really raw bytes, or is there structure I haven't spotted —
+a string table, a vector list, a small look-up table that wants
+its own labels?
+
+``fantasm data runs`` is the entry point. It surfaces every
+contiguous run of same-type data items, longest first, so the
+biggest unstructured stretches surface immediately:
+
+.. code-block:: bash
+
+   uv run fantasm data runs 1.0
+   uv run fantasm data runs 1.0 --min-bytes 16        # only longer runs
+   uv run fantasm data runs 1.0 --type word           # vector tables
+   uv run fantasm data runs 1.0 --unannotated         # work front
+
+Each row carries the run's start address, type, item count, byte
+length, leading label (if any), and a ``Y`` marker when the run
+has either a label or per-item inline comments. ``--annotated`` /
+``--unannotated`` filter on that marker — ``--unannotated`` is
+the "what should I look at next?" view.
+
+
+I want to know what's in this byte run
+--------------------------------------
+
+The companion to ``data runs``. Once the listing flags a long
+unannotated byte run, ``fantasm data classify`` applies three
+heuristic classifiers to it:
+
+* **Padding** — repeating-byte patterns of length 1–4 (the
+  ``FF FF FF…`` / ``00 00 00…`` / ``EA EA EA…`` fills, plus
+  alternating two-byte fillers like ``AB CD AB CD``). Catches ROM
+  pad bytes that should be declared as such rather than left as
+  raw EQUB.
+* **String** — runs of printable ASCII (0x20–0x7E plus tab / CR /
+  LF) optionally terminated by a null byte. Catches embedded
+  text that py8dis hasn't recognised as a string.
+* **Code** — every starting alignment is tried; the longest sweep
+  consuming valid 6502 opcode lengths wins. Catches code that
+  py8dis emitted as bytes (often because no ``entry()`` reached
+  it).
+
+Run it:
+
+.. code-block:: bash
+
+   uv run fantasm data classify 1.0
+   uv run fantasm data classify 1.0 --min-string 8 --min-code 16
+
+The orchestrator walks every run of byte-typed items left to
+right, applying the classifiers in priority order **padding →
+string → code**: the first classifier to claim bytes at the
+cursor wins, the cursor advances past the match, then the next
+round runs. Output is sorted by length descending so the
+strongest candidates surface first.
+
+Confidence is exact (1.0) for padding and pure-printable
+strings; for code it is a coarse length heuristic
+(``min(length / 32, 1.0)``) — a nudge towards "this is more
+likely real code" rather than a guarantee. The candidate list is
+*advisory*; treat it as a guide for which byte runs deserve a
+closer look, not as a directive to reclassify automatically.
+
+Use ``--target-type string`` (or word) to also re-examine items
+py8dis already classified as strings/words — useful for sanity
+checks ("did py8dis get the boundaries right?"). The default
+``--target-type byte`` is the dominant case.
+
+
 I want to bring annotations from a known version to a new one
 -------------------------------------------------------------
 

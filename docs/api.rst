@@ -120,6 +120,12 @@ Byte-signature search (literal + wildcard patterns)
 .. automodule:: fantasm.api.bytes_search
 
 
+Data-declaration review and heuristic classification
+----------------------------------------------------
+
+.. automodule:: fantasm.api.data_review
+
+
 Cross-ROM shared-code matching
 ------------------------------
 
