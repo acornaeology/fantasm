@@ -8,9 +8,11 @@ style). The shape of the missing hook in py8dis JSON output is:
 .. code-block:: text
 
     JSR <target>          ← code item, mnemonic="jsr"
-    EQUS "..."            ← string item with the inline text
-                            (terminator byte included as the
-                            last element of `bytes`)
+    EQUS "..."            ← string item with the inline text.
+                            For stringz / stringcr the terminator
+                            (0x00 / 0x0D) is the last byte of the
+                            string item; for stringhi it is *not* —
+                            see `_classify_terminator`.
     EQUB ...              ← resume code, mis-emitted as raw byte
                             items because the hook wasn't wired up
 
@@ -81,26 +83,38 @@ class HookCandidate:
         return _HOOK_FN[self.hook_kind]
 
 
-def _classify_terminator(string_bytes: Sequence[int]) -> str:
-    """Identify the print-inline kind from the string item's last byte.
+def _classify_terminator(
+    string_bytes: Sequence[int],
+    next_first_byte: int | None,
+) -> str:
+    """Identify the print-inline kind from the post-JSR items.
 
-    py8dis includes the terminator inside the string item's
-    ``bytes`` array; the last byte is therefore diagnostic:
+    py8dis encodes terminators asymmetrically:
 
-    - ``0x0D`` → stringcr
-    - ``0x00`` → stringz
-    - bit 7 set → stringhi (high-bit terminator)
-    - else → unknown (e.g. length-prefixed; let the user pick)
+    - ``stringz`` and ``stringcr`` include the terminator (``0x00``
+      or ``0x0D``) as the last byte of the string item.
+    - ``stringhi`` *excludes* its bit-7 terminator: that byte lives
+      as the first byte of the following item, doing double duty
+      as terminator and resume opcode.
+
+    Priority therefore matters:
+
+    1. String ends in ``0x00`` → stringz (unambiguous).
+    2. Next item starts with bit-7 set → stringhi (the structural
+       signal — beats a CR-looking last byte, since the printed
+       text may itself end in ``\\r``).
+    3. String ends in ``0x0D`` and next byte does not have bit 7
+       set → stringcr.
+    4. Otherwise → unknown (e.g. length-prefixed; let the user pick).
     """
     if not string_bytes:
         return _KIND_UNKNOWN
-    last = string_bytes[-1]
-    if last == 0x0D:
-        return _KIND_CR
-    if last == 0x00:
+    if string_bytes[-1] == 0x00:
         return _KIND_Z
-    if last & 0x80:
+    if next_first_byte is not None and next_first_byte & 0x80:
         return _KIND_HI
+    if string_bytes[-1] == 0x0D:
+        return _KIND_CR
     return _KIND_UNKNOWN
 
 
@@ -195,7 +209,10 @@ def find_hook_candidates(
         ):
             continue
 
-        kind = _classify_terminator(string_bytes)
+        kind = _classify_terminator(
+            string_bytes,
+            resume_bytes[0] if resume_bytes else None,
+        )
         sample = nxt.get("string") or ""
         matching.setdefault(target, []).append(
             (item["addr"], kind, sample)

@@ -305,14 +305,22 @@ Two reports come back:
   Drop these into your driver, regenerate, and the downstream
   byte runs collapse into normal code.
 
-Hook-kind detection looks at the **last byte** of each call
-site's inline string item — py8dis includes the terminator
-inside the string's ``bytes``:
+Hook-kind detection has to deal with py8dis's asymmetric
+terminator encoding. ``stringz`` and ``stringcr`` include the
+terminator (``0x00`` or ``0x0D``) as the last byte of the string
+item, but ``stringhi`` *excludes* its bit-7 terminator — that
+byte lives as the first byte of the following item, doing double
+duty as terminator and resume opcode. The classifier therefore
+looks at both the string's last byte *and* the next item's first
+byte, applied in this priority:
 
-* ``0x0D`` → ``stringcr_hook``
-* ``0x00`` → ``stringz_hook``
-* bit-7 set → ``stringhi_hook``
-* anything else → ``unknown`` (paste line emits ``<HOOK_FN>`` for
+* string ends in ``0x00`` → ``stringz_hook`` (unambiguous)
+* next byte has bit 7 set → ``stringhi_hook`` (the structural
+  signal — beats a ``\r``-looking last byte, since the printed
+  text may itself end in ``\r``)
+* string ends in ``0x0D`` and next byte has bit 7 clear →
+  ``stringcr_hook``
+* otherwise → ``unknown`` (paste line emits ``<HOOK_FN>`` for
   manual selection)
 
 Already-hooked targets are silent in the output: their post-call

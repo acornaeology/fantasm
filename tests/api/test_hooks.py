@@ -49,8 +49,15 @@ def _code(addr, raw_bytes, mnemonic="lda"):
 
 
 # Bytes that decode as a clean 6502 instruction stream
-# (LDA #imm; STA abs; RTS = 6 bytes / 3 instructions).
+# (LDA #imm; STA abs; RTS = 6 bytes / 3 instructions). First byte
+# (0xA9) has bit 7 set, so this resume run *also* satisfies the
+# stringhi structural signal.
 _VALID_RESUME_CODE = [0xA9, 0x00, 0x8D, 0x34, 0x12, 0x60]
+
+# Same idea, but the first byte has bit 7 *clear* — for tests that
+# need to exercise stringz/stringcr without tripping the
+# bit-7-next-byte stringhi rule. (JMP $8000; RTS = 4 bytes.)
+_VALID_RESUME_CODE_NO_BIT7 = [0x4C, 0x00, 0x80, 0x60]
 
 
 # --- terminator-kind classification ------------------------------
@@ -58,20 +65,15 @@ _VALID_RESUME_CODE = [0xA9, 0x00, 0x8D, 0x34, 0x12, 0x60]
 
 class TestTerminatorClassification:
     def test_stringcr(self) -> None:
-        # 0x0D last byte of a string item → stringcr.
-        items = [
-            _jsr(0x8000, 0x9000),
-            _string(0x8003, b"Hello\r"),
-            _byte(0x8009, _VALID_RESUME_CODE),
-        ] * 3   # three matching call sites at distinct addresses below
-        # Re-stamp distinct addresses on each repeat
+        # String ends in 0x0D and the next byte's bit 7 is *clear*
+        # → stringcr.
         items = []
         addr = 0x8000
         for _ in range(3):
             items += [
                 _jsr(addr, 0x9000),
                 _string(addr + 3, b"Hello\r"),
-                _byte(addr + 9, _VALID_RESUME_CODE),
+                _byte(addr + 9, _VALID_RESUME_CODE_NO_BIT7),
             ]
             addr += 0x100
         candidates = find_hook_candidates(items)
@@ -80,6 +82,7 @@ class TestTerminatorClassification:
         assert candidates[0].hook_function == "stringcr_hook"
 
     def test_stringz(self) -> None:
+        # String ends in 0x00 → stringz, regardless of next byte.
         items = []
         for i in range(3):
             base = 0x8000 + i * 0x100
@@ -92,23 +95,11 @@ class TestTerminatorClassification:
         assert candidates[0].hook_kind == "stringz"
         assert candidates[0].hook_function == "stringz_hook"
 
-    def test_stringhi(self) -> None:
-        # Last byte has bit 7 set (high-bit terminator).
-        items = []
-        for i in range(3):
-            base = 0x8000 + i * 0x100
-            items += [
-                _jsr(base, 0x9000),
-                _string(base + 3, b"Hello\xC0"),
-                _byte(base + 9, _VALID_RESUME_CODE),
-            ]
-        candidates = find_hook_candidates(items)
-        assert candidates[0].hook_kind == "stringhi"
-        assert candidates[0].hook_function == "stringhi_hook"
-
-    def test_unknown(self) -> None:
-        # Last byte is plain printable ASCII — no terminator
-        # convention we recognise.
+    def test_stringhi_via_bit7_next_byte(self) -> None:
+        # py8dis encodes stringhi asymmetrically: the bit-7
+        # terminator lives as the first byte of the *next* item,
+        # not as the last byte of the string. Here the printed
+        # text has no terminator on its own.
         items = []
         for i in range(3):
             base = 0x8000 + i * 0x100
@@ -116,6 +107,51 @@ class TestTerminatorClassification:
                 _jsr(base, 0x9000),
                 _string(base + 3, b"Hello"),
                 _byte(base + 8, _VALID_RESUME_CODE),
+            ]
+        candidates = find_hook_candidates(items)
+        assert candidates[0].hook_kind == "stringhi"
+        assert candidates[0].hook_function == "stringhi_hook"
+
+    def test_stringhi_beats_cr_when_next_byte_has_bit7(self) -> None:
+        # Printed text ends with CR but the *next* byte has bit 7 —
+        # this is stringhi, not stringcr. The CR is part of the
+        # printed message; the structural terminator is the bit-7
+        # opcode that follows.
+        items = []
+        for i in range(3):
+            base = 0x8000 + i * 0x100
+            items += [
+                _jsr(base, 0x9000),
+                _string(base + 3, b"Space\r"),
+                _byte(base + 9, _VALID_RESUME_CODE),
+            ]
+        candidates = find_hook_candidates(items)
+        assert candidates[0].hook_kind == "stringhi"
+
+    def test_stringz_wins_over_bit7_next(self) -> None:
+        # Even when the next byte has bit 7 set, an explicit null
+        # in the string item is unambiguous: this is stringz.
+        items = []
+        for i in range(3):
+            base = 0x8000 + i * 0x100
+            items += [
+                _jsr(base, 0x9000),
+                _string(base + 3, b"Hi\x00"),
+                _byte(base + 6, _VALID_RESUME_CODE),  # 0xA9 first
+            ]
+        candidates = find_hook_candidates(items)
+        assert candidates[0].hook_kind == "stringz"
+
+    def test_unknown(self) -> None:
+        # No terminator we recognise: string ends in printable
+        # ASCII and the next byte's bit 7 is clear.
+        items = []
+        for i in range(3):
+            base = 0x8000 + i * 0x100
+            items += [
+                _jsr(base, 0x9000),
+                _string(base + 3, b"Hello"),
+                _byte(base + 8, _VALID_RESUME_CODE_NO_BIT7),
             ]
         candidates = find_hook_candidates(items)
         assert candidates[0].hook_kind == "unknown"

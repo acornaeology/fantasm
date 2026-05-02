@@ -31,8 +31,10 @@ def _setup(tmp_path: Path, items, *, meta=None):
     return runner
 
 
-# Bytes that decode as valid 6502 (LDA #imm; STA abs; RTS).
-_RESUME = [0xA9, 0x00, 0x8D, 0x34, 0x12, 0x60]
+# Bytes that decode as valid 6502 (JMP $8000; RTS). First byte
+# (0x4C) has bit 7 *clear* — important so stringcr fixtures don't
+# accidentally trip the bit-7-next-byte stringhi rule.
+_RESUME = [0x4C, 0x00, 0x80, 0x60]
 
 
 def _missing_hook_call_site(addr, target):
