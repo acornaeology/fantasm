@@ -13,6 +13,7 @@ from .annotations import annotations
 from .asm import asm
 from .audit import audit
 from .backfill import backfill_cmd
+from .bytes import bytes_group
 from .cfg import cfg
 from .comments import comments
 from .compare import compare
@@ -35,6 +36,7 @@ for _cmd in (
     asm,
     audit,
     backfill_cmd,
+    bytes_group,
     cfg,
     comments,
     compare,

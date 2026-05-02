@@ -56,6 +56,12 @@ from .blockmatch import (
     disassemble_to_opcodes,
     find_relocated_blocks,
 )
+from .bytes_search import (
+    BytePattern,
+    ByteMatch,
+    find_byte_pattern,
+    parse_byte_pattern,
+)
 from .fingerprint import (
     find_duplicate_blocks,
     fingerprint_blocks,
