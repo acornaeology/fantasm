@@ -14,10 +14,12 @@ from fantasm.api.comment_check import (
     build_known_addrs,
     check_branch_target,
     check_cr_value,
+    check_md_link_in_code_span,
     check_reg_value,
     check_stale_addr,
     check_tube_register,
     find_chains,
+    find_md_links_in_code_spans,
     find_stale_addrs,
     parse_imm_value,
     run_checks,
@@ -375,6 +377,176 @@ class TestRunChecks:
         # No finding when region present; stale-addr finding when not.
         assert not any(f["check"] == "stale_addr" for f in with_region)
         assert any(f["check"] == "stale_addr" for f in without_region)
+
+
+class TestFindMdLinksInCodeSpans:
+    def test_link_inside_single_backtick_span_flagged(self) -> None:
+        text = "Uses `BIT [adlc_cr1](address:FEA0?hex)` on SR1"
+        offences = find_md_links_in_code_spans(text)
+        assert len(offences) == 1
+        assert "[adlc_cr1](address:FEA0?hex)" in offences[0]
+        # Span text returned with its enclosing backticks.
+        assert offences[0].startswith("`") and offences[0].endswith("`")
+
+    def test_link_outside_code_span_not_flagged(self) -> None:
+        # The recommended form: code span around the label only.
+        text = "Uses `BIT` of [`adlc_cr1`](address:FEA0?hex) on SR1"
+        assert find_md_links_in_code_spans(text) == []
+
+    def test_plain_code_span_not_flagged(self) -> None:
+        text = "Uses `BIT` and then `JMP` to clean up"
+        assert find_md_links_in_code_spans(text) == []
+
+    def test_address_link_outside_any_span_not_flagged(self) -> None:
+        text = "See [print_inline](address:9261?hex) for details"
+        assert find_md_links_in_code_spans(text) == []
+
+    def test_multiple_offences_all_flagged(self) -> None:
+        text = (
+            "First `STA [foo](address:0D0C?hex)` then "
+            "`STY [bar](address:0D0D?hex)` to install"
+        )
+        offences = find_md_links_in_code_spans(text)
+        assert len(offences) == 2
+        assert "foo" in offences[0]
+        assert "bar" in offences[1]
+
+    def test_newline_inside_span_still_caught(self) -> None:
+        # The reference impl explicitly cited `JMP\n([exec_addr_lo]…)` —
+        # a backslash-n separator inside a code span shouldn't fool
+        # the scanner. (Reads as a literal newline character; the
+        # span terminator is the next backtick.)
+        text = "Calls `JMP\n([exec_addr_lo](address:0D66?hex))`"
+        offences = find_md_links_in_code_spans(text)
+        assert len(offences) == 1
+
+    def test_empty_text_returns_empty_list(self) -> None:
+        assert find_md_links_in_code_spans("") == []
+
+    def test_unclosed_span_does_not_flag(self) -> None:
+        # A lone backtick with no matching close = not actually a
+        # code span; nothing to report.
+        assert find_md_links_in_code_spans("`unclosed [x](address:1234)") == []
+
+
+class TestCheckMdLinkInCodeSpan:
+    def test_inline_comment_offence_high(self) -> None:
+        item = {
+            "addr": 0x8000,
+            "type": "code",
+            "mnemonic": "bit",
+            "comment_inline": "Uses `BIT [adlc_cr1](address:FEA0?hex)` on SR1",
+        }
+        findings = check_md_link_in_code_span(item, {})
+        assert findings is not None
+        assert len(findings) == 1
+        assert findings[0]["confidence"] == "HIGH"
+        assert findings[0]["check"] == "md_link_in_code_span"
+        assert findings[0]["addr"] == 0x8000
+
+    def test_clean_comment_no_finding(self) -> None:
+        item = {
+            "addr": 0x8000,
+            "type": "code",
+            "mnemonic": "bit",
+            "comment_inline": "Uses `BIT` to test SR1",
+        }
+        assert check_md_link_in_code_span(item, {}) is None
+
+
+class TestRunChecksMdLink:
+    def test_block_comment_offence_surfaces(self) -> None:
+        data = {
+            "items": [
+                {
+                    "addr": 0x8000,
+                    "type": "code",
+                    "mnemonic": "rts",
+                    "comments_before": [
+                        "Header for `JSR [print_inline](address:9261?hex)`",
+                    ],
+                }
+            ],
+            "subroutines": [],
+        }
+        findings = run_checks(data)
+        assert any(
+            f["check"] == "md_link_in_code_span"
+            and "Block comment" in f["message"]
+            for f in findings
+        )
+
+    def test_subroutine_description_offence_surfaces(self) -> None:
+        data = {
+            "items": [
+                {"addr": 0x8000, "type": "code", "mnemonic": "rts"},
+            ],
+            "subroutines": [
+                {
+                    "addr": 0x8000,
+                    "name": "set_nmi_vector",
+                    "description": (
+                        "Performs `STY [nmi_jmp_hi](address:0D0D?hex)` "
+                        "and falls through"
+                    ),
+                }
+            ],
+        }
+        findings = run_checks(data)
+        offences = [
+            f for f in findings if f["check"] == "md_link_in_code_span"
+        ]
+        assert len(offences) == 1
+        assert offences[0]["confidence"] == "HIGH"
+        assert offences[0]["addr"] == 0x8000
+
+    def test_on_entry_dict_offence_surfaces(self) -> None:
+        data = {
+            "items": [
+                {"addr": 0x8000, "type": "code", "mnemonic": "rts"},
+            ],
+            "subroutines": [
+                {
+                    "addr": 0x8000,
+                    "name": "foo",
+                    "on_entry": {
+                        "A": "Holds `BIT [econet_station_id](address:FE18?hex)`",
+                    },
+                }
+            ],
+        }
+        findings = run_checks(data)
+        assert any(
+            f["check"] == "md_link_in_code_span" for f in findings
+        )
+
+    def test_clean_driver_no_md_link_findings(self) -> None:
+        data = {
+            "items": [
+                {
+                    "addr": 0x8000,
+                    "type": "code",
+                    "mnemonic": "rts",
+                    "comments_before": [
+                        "Calls [`print_inline`](address:9261?hex)"
+                        " then returns",
+                    ],
+                }
+            ],
+            "subroutines": [
+                {
+                    "addr": 0x8000,
+                    "name": "foo",
+                    "description": (
+                        "Uses `BIT` of [`adlc_cr1`](address:FEA0?hex)"
+                    ),
+                }
+            ],
+        }
+        findings = run_checks(data)
+        assert not any(
+            f["check"] == "md_link_in_code_span" for f in findings
+        )
 
 
 def test_module_dunder_all_resolves() -> None:

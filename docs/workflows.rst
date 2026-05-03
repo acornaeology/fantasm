@@ -75,12 +75,21 @@ Two complementary commands.
 ``fantasm comments check`` runs the comment-vs-code consistency
 checks: detects branch comments that disagree with the actual flag,
 register-load comments that name the wrong value, stale "see also"
-addresses that no longer match an instruction.
+addresses that no longer match an instruction, and Markdown
+address-links accidentally trapped inside a backtick code span
+(``\`MNEMONIC [label](address:HEX)\``` — the link won't render
+inside ``<code>``; see ``AUTHORING.md §1.3``).
 
 .. code-block:: bash
 
    uv run fantasm comments check 1.0
    uv run fantasm comments check 1.0 --sub 0x8027    # one subroutine
+   uv run fantasm comments check 1.0 --strict        # CI gate
+
+``--strict`` exits non-zero whenever any HIGH-confidence finding is
+reported (wrong register / wrong branch target / wrong CR / wrong
+tube register / Markdown link inside a code span). The report
+still renders before the exit, so CI logs show the offences.
 
 ``fantasm comments suggest`` looks for uncommented instructions and
 proposes paste-ready ``comment()`` lines based on:

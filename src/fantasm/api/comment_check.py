@@ -256,6 +256,103 @@ def check_stale_addr(item: dict, context: dict) -> list[dict] | None:
     return findings if findings else None
 
 
+# Markdown link inside a backtick code span — won't render as a
+# clickable anchor. The literal ``](address:`` is the unmistakable
+# fingerprint; if it appears between a pair of backticks, the
+# author meant a link but accidentally put the surrounding
+# instruction text inside the same code span.
+_ADDRESS_LINK_RE = re.compile(r"\]\(address:")
+
+
+def find_md_links_in_code_spans(text: str) -> list[str]:
+    """Find Markdown address-links sitting inside backtick code spans.
+
+    Each Markdown ``[label](address:HEX)`` link rendered inside a
+    backtick code span (``\\`...\\```) appears verbatim in the asm
+    listing and the rendered HTML — the link syntax isn't
+    interpreted inside ``<code>``. Authors typically slip into this
+    when wrapping ``MNEMONIC + operand`` together inside one code
+    span.
+
+    Returns the list of offending span substrings (with their
+    enclosing backticks) in source order. Empty list when there's
+    nothing to report.
+    """
+    offences: list[str] = []
+    in_span = False
+    span_start = -1
+    for i, ch in enumerate(text):
+        if ch != "`":
+            continue
+        if not in_span:
+            in_span = True
+            span_start = i
+        else:
+            span_text = text[span_start + 1:i]
+            if _ADDRESS_LINK_RE.search(span_text):
+                offences.append(text[span_start:i + 1])
+            in_span = False
+    return offences
+
+
+def _md_link_finding(addr: int, span: str, source: str) -> dict:
+    return {
+        "check": "md_link_in_code_span",
+        "confidence": "HIGH",
+        "addr": addr,
+        "message": (
+            f"{source} contains Markdown address-link inside a "
+            f"backtick code span (won't render as a hyperlink): {span}"
+        ),
+    }
+
+
+def check_md_link_in_code_span(
+    item: dict, _context: dict
+) -> list[dict] | None:
+    """Inline comment carries a Markdown link inside a code span.
+
+    HIGH confidence.
+    """
+    comment = item.get("comment_inline", "")
+    findings = [
+        _md_link_finding(item["addr"], span, "Inline comment")
+        for span in find_md_links_in_code_spans(comment)
+    ]
+    return findings if findings else None
+
+
+def check_block_md_link_in_code_span(item: dict) -> list[dict]:
+    """``comments_before`` carries a Markdown link inside a code span."""
+    findings: list[dict] = []
+    for comment in item.get("comments_before", []):
+        for span in find_md_links_in_code_spans(comment):
+            findings.append(
+                _md_link_finding(item["addr"], span, "Block comment")
+            )
+    return findings
+
+
+def check_desc_md_link_in_code_span(sub: dict) -> list[dict]:
+    """Subroutine description / title / on_entry / on_exit carry one."""
+    findings: list[dict] = []
+    addr = sub["addr"]
+    for field in ("description", "title"):
+        for span in find_md_links_in_code_spans(sub.get(field, "")):
+            findings.append(
+                _md_link_finding(addr, span, f"Subroutine {field}")
+            )
+    for field in ("on_entry", "on_exit"):
+        obj = sub.get(field)
+        if isinstance(obj, dict):
+            for _reg, text in obj.items():
+                for span in find_md_links_in_code_spans(str(text)):
+                    findings.append(
+                        _md_link_finding(addr, span, f"Subroutine {field}")
+                    )
+    return findings
+
+
 # Per-item checks, in order.
 ALL_CHECKS: tuple[Callable[[dict, dict], list[dict] | None], ...] = (
     check_reg_value,
@@ -263,6 +360,7 @@ ALL_CHECKS: tuple[Callable[[dict, dict], list[dict] | None], ...] = (
     check_cr_value,
     check_tube_register,
     check_stale_addr,
+    check_md_link_in_code_span,
 )
 
 
@@ -546,6 +644,7 @@ def run_checks(
             if sub_range[1] is not None and sub["addr"] >= sub_range[1]:
                 continue
         findings.extend(check_desc_stale_addr(sub, known_addrs))
+        findings.extend(check_desc_md_link_in_code_span(sub))
         for field in ("description", "title"):
             for stale in find_stale_addrs(sub.get(field, ""), known_addrs):
                 desc_seen.add((sub["addr"], stale))
@@ -557,6 +656,7 @@ def run_checks(
             if sub_range[1] is not None and item["addr"] >= sub_range[1]:
                 break
         findings.extend(check_block_stale_addr(item, known_addrs, desc_seen))
+        findings.extend(check_block_md_link_in_code_span(item))
 
     findings.extend(check_chain_comments(sorted_items, sub_range=sub_range))
 
@@ -569,15 +669,19 @@ __all__ = [
     "IMM_REG_MNEMONICS",
     "TUBE_REGISTERS",
     "build_known_addrs",
+    "check_block_md_link_in_code_span",
     "check_block_stale_addr",
     "check_branch_target",
     "check_chain_comments",
     "check_cr_value",
+    "check_desc_md_link_in_code_span",
     "check_desc_stale_addr",
+    "check_md_link_in_code_span",
     "check_reg_value",
     "check_stale_addr",
     "check_tube_register",
     "find_chains",
+    "find_md_links_in_code_spans",
     "find_stale_addrs",
     "parse_imm_value",
     "run_checks",

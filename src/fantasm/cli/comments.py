@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
@@ -143,9 +145,24 @@ def comments_suggest(
     "sub_target",
     help="Restrict to the subroutine starting at this hex address.",
 )
+@click.option(
+    "--strict",
+    is_flag=True,
+    default=False,
+    help=(
+        "Exit non-zero if any HIGH-confidence finding is reported. "
+        "Use as a CI gate: HIGH findings (wrong register / wrong "
+        "branch target / wrong CR / wrong tube register / Markdown "
+        "link inside a backtick code span) almost certainly disagree "
+        "with the code."
+    ),
+)
 @report_output(reports={"findings": "Comment-check findings"})
-def comments_check(version_id: str, sub_target: str | None) -> Reports:
-    actx = analysis_context(click.get_current_context(), version_id)
+def comments_check(
+    version_id: str, sub_target: str | None, strict: bool
+) -> Reports:
+    ctx = click.get_current_context()
+    actx = analysis_context(ctx, version_id)
     try:
         findings = run_checks(
             actx.data, sub_target=sub_target, regions=actx.base_regions
@@ -155,6 +172,11 @@ def comments_check(version_id: str, sub_target: str | None) -> Reports:
 
     high = sum(1 for f in findings if f["confidence"] == "HIGH")
     medium = sum(1 for f in findings if f["confidence"] == "MEDIUM")
+
+    if strict and high:
+        # Render first, then exit non-zero. ``call_on_close`` fires
+        # after asyoulikeit has flushed its output.
+        ctx.call_on_close(lambda: sys.exit(1))
 
     table = (
         TableContent(
