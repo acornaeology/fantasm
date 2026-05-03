@@ -31,11 +31,15 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .blockmatch import disassemble_to_opcodes
+
+if TYPE_CHECKING:
+    from fantasm.config import ProjectContext
 
 
 def build_confidence_map_for_block(
@@ -627,6 +631,158 @@ def diff_annotations(
     return diffs
 
 
+# --- High-level public entry point for cross-version generators ----
+
+
+def make_project_rom_loader(
+    project: "ProjectContext",
+) -> Callable[[str], bytes]:
+    """Return a memoised ROM-bytes loader keyed by version id.
+
+    The loader resolves each version's directory against the project
+    config (``[versions] prefixes`` / ``directory``), then reads
+    ``versions/<prefix>-<id>/rom/<prefix>-<id>.rom``. Bytes are
+    cached for the lifetime of the returned closure.
+
+    Raises :class:`FileNotFoundError` when a requested version's
+    ROM file is missing — the API-layer counterpart to the CLI's
+    ``click.UsageError``.
+    """
+    from .paths import (
+        project_rom_prefixes,
+        resolve_version_dirpath_for_project,
+    )
+
+    prefixes = project_rom_prefixes(project)
+    cache: dict[str, bytes] = {}
+
+    def loader(version_id: str) -> bytes:
+        if version_id not in cache:
+            version_dirpath = resolve_version_dirpath_for_project(
+                project, version_id
+            )
+            name = version_dirpath.name
+            matched_prefix = next(
+                (p for p in prefixes if name == p or name.startswith(f"{p}-")),
+                prefixes[0] if prefixes else "",
+            )
+            base = f"{matched_prefix}-{version_id}"
+            rom_filepath = version_dirpath / "rom" / f"{base}.rom"
+            if not rom_filepath.exists():
+                raise FileNotFoundError(
+                    f"ROM not found for version {version_id!r}: {rom_filepath}"
+                )
+            cache[version_id] = rom_filepath.read_bytes()
+        return cache[version_id]
+
+    return loader
+
+
+def propose_translations(
+    project: "ProjectContext",
+    *,
+    source_version: str,
+    target_version: str,
+    source_driver: Path,
+    target_driver: Path | None = None,
+    threshold: int = 5,
+    cpu: str | None = None,
+    rom_base: int | None = None,
+    workspace_ranges: Iterable[tuple[int, int]] = ((0x0000, 0x0100),),
+    high_confidence: int = 1000,
+) -> PropagationReport:
+    """High-level translation proposal pipeline for generator scripts.
+
+    Glues together the version graph, opcode-level confidence-map
+    composition, and annotation parsing — the same pipeline
+    ``fantasm backfill`` runs on the CLI side, exposed as a public
+    API so cross-version baseline generators (e.g. an
+    ``acorn-nfs/scripts/generate_421_variant_1.py``) can use the
+    same anchored translation engine instead of reaching for
+    :func:`fantasm.api.blockmatch.build_full_address_map` and
+    inheriting its weaker contract (see issue #10).
+
+    Anchoring contract: every emitted candidate is anchored in a
+    composed shared block of length ≥ ``threshold`` opcodes across
+    the full source-to-target path through the version graph (the
+    weakest hop is the binding constraint). Source addresses
+    outside such a block produce no candidate — the consumer
+    should route those to ``# UNMAPPED:``.
+
+    Args:
+        project: The project context. Use
+            :func:`fantasm.config.resolve_project_context` to
+            obtain one (``resolve_project_context(None)`` walks up
+            from the current working directory).
+        source_version: Version id whose annotations to translate.
+        target_version: Version id to translate them to.
+        source_driver: Path to the source driver script.
+        target_driver: Optional path to an existing target driver.
+            When given, candidates whose target address already
+            carries an annotation of the same kind are skipped (the
+            same dedup rule the CLI applies). When omitted (typical
+            for "fresh baseline" use), all anchored translations
+            are proposed.
+        threshold: Minimum composed block length for a candidate.
+            Default 5 matches ``fantasm backfill``'s CLI default.
+        cpu: Override for the project's ``[rom] cpu`` setting.
+        rom_base: Override for the project's ``[rom] base_address``.
+        workspace_ranges: Identity-mapped workspace regions.
+        high_confidence: Confidence stamped on workspace mappings.
+
+    Raises:
+        FileNotFoundError: ``source_driver`` (or, when given,
+            ``target_driver``) does not exist; or any version's ROM
+            bytes are missing.
+        VersionGraphError: The version graph could not be loaded.
+        VersionNotInGraphError: A version isn't in the graph.
+        NoPathError: No path between the two versions.
+    """
+    from .version_graph import compose_chained_map, load_version_graph
+
+    if not source_driver.exists():
+        raise FileNotFoundError(
+            f"source driver not found: {source_driver}"
+        )
+    if target_driver is not None and not target_driver.exists():
+        raise FileNotFoundError(
+            f"target driver not found: {target_driver}"
+        )
+
+    rom_section: dict = {}
+    if project.has_root:
+        rom_section = dict(project.config.get("rom", {}))
+    if cpu is None:
+        cpu = rom_section.get("cpu", "6502")
+    if rom_base is None:
+        rom_base = rom_section.get("base_address", 0x8000)
+
+    target_text = (
+        target_driver.read_text() if target_driver is not None else ""
+    )
+
+    rom_loader = make_project_rom_loader(project)
+    graph = load_version_graph(project)
+
+    confidence_map = compose_chained_map(
+        graph,
+        source_version,
+        target_version,
+        rom_loader,
+        rom_base=rom_base,
+        cpu=cpu,
+        workspace_ranges=workspace_ranges,
+        high_confidence=high_confidence,
+    )
+
+    return propose_propagations(
+        source_driver.read_text(),
+        target_text,
+        confidence_map,
+        threshold=threshold,
+    )
+
+
 __all__ = [
     "AnnotationDiff",
     "PropagationCandidate",
@@ -638,8 +794,10 @@ __all__ = [
     "build_confidence_map_for_block",
     "diff_annotations",
     "group_logical_statements",
+    "make_project_rom_loader",
     "parse_annotations",
     "propose_propagations",
+    "propose_translations",
     "translate_address_in_text",
     "translate_subroutine",
 ]

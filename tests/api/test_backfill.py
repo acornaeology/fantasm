@@ -381,3 +381,242 @@ class TestDiffAnnotations:
         kinds_addrs = [(d.kind, d.source_addr) for d in diffs]
         # Sorted by (kind, addr); kinds in alpha order.
         assert kinds_addrs == sorted(kinds_addrs)
+
+
+# --- propose_translations -----------------------------------------
+
+
+from pathlib import Path
+
+from fantasm.api.backfill import (
+    make_project_rom_loader,
+    propose_translations,
+)
+from fantasm.api.version_graph import (
+    NoPathError,
+    VersionNotInGraphError,
+)
+from fantasm.config import resolve_project_context
+
+
+def _bootstrap_project(
+    tmp_path: Path,
+    *,
+    rom_a: bytes,
+    rom_b: bytes,
+    source_driver_text: str,
+    target_driver_text: str | None = None,
+) -> tuple[Path, Path, Path, Path]:
+    """Lay out a minimal two-version project on disk.
+
+    Returns ``(project_root, source_driver, target_driver_path, ...)``.
+    """
+    (tmp_path / "fantasm.toml").write_text(
+        '[project]\n'
+        'name = "demo"\n'
+        '[versions]\n'
+        'prefixes = ["demo"]\n'
+        '\n'
+        '[[versions.entry]]\n'
+        'id = "1.0"\n'
+        '[[versions.entry]]\n'
+        'id = "2.0"\n'
+        'parents = ["1.0"]\n'
+    )
+    for vid, rom_bytes in (("1.0", rom_a), ("2.0", rom_b)):
+        rom_dirpath = tmp_path / "versions" / f"demo-{vid}" / "rom"
+        rom_dirpath.mkdir(parents=True)
+        (rom_dirpath / f"demo-{vid}.rom").write_bytes(rom_bytes)
+        driver_dirpath = (
+            tmp_path / "versions" / f"demo-{vid}" / "disassemble"
+        )
+        driver_dirpath.mkdir(parents=True)
+    src_driver = (
+        tmp_path / "versions" / "demo-1.0" / "disassemble" / "disasm_demo_10.py"
+    )
+    src_driver.write_text(source_driver_text)
+    tgt_driver = (
+        tmp_path / "versions" / "demo-2.0" / "disassemble" / "disasm_demo_20.py"
+    )
+    if target_driver_text is not None:
+        tgt_driver.write_text(target_driver_text)
+    return tmp_path, src_driver, tgt_driver, tmp_path / "fantasm.toml"
+
+
+# Eight-instruction ROM that will produce a confidence-map run
+# longer than the default threshold of 5.
+_LONG_ROM = bytes(
+    [0xA9, 0x01, 0x85, 0x70, 0xA9, 0x02, 0x85, 0x71,
+     0xA9, 0x03, 0x85, 0x72, 0xA9, 0x04, 0x85, 0x73]
+)
+
+
+class TestProposeTranslations:
+    def test_anchored_translation_round_trip(self, tmp_path: Path) -> None:
+        # Identical ROMs → identity confidence map at maximum
+        # block length. The single source comment should propagate
+        # to the same address in the target driver.
+        root, src_driver, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text=(
+                'comment(0x8000, "first byte", inline=True)\n'
+                'comment(0x8002, "second byte", inline=True)\n'
+            ),
+        )
+        project = resolve_project_context(root)
+        report = propose_translations(
+            project,
+            source_version="1.0",
+            target_version="2.0",
+            source_driver=src_driver,
+        )
+        addrs = {(c.source_addr, c.target_addr) for c in report.candidates}
+        # Every source address maps to itself in the target.
+        assert (0x8000, 0x8000) in addrs
+        assert (0x8002, 0x8002) in addrs
+
+    def test_unmapped_address_dropped(self, tmp_path: Path) -> None:
+        # The ROMs share their first 8 instructions then diverge.
+        # A source comment past the divergence point has no
+        # confidence-map entry and produces no candidate — exactly
+        # the contract the issue calls for.
+        rom_a = _LONG_ROM + bytes([0xEA, 0xEA, 0xEA, 0xEA])
+        rom_b = _LONG_ROM + bytes([0x38, 0x18, 0xD8, 0xF8])
+        root, src_driver, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=rom_a,
+            rom_b=rom_b,
+            source_driver_text=(
+                'comment(0x8000, "anchored", inline=True)\n'
+                'comment(0x8010, "past divergence", inline=True)\n'
+            ),
+        )
+        project = resolve_project_context(root)
+        report = propose_translations(
+            project,
+            source_version="1.0",
+            target_version="2.0",
+            source_driver=src_driver,
+        )
+        srcs = {c.source_addr for c in report.candidates}
+        assert 0x8000 in srcs
+        assert 0x8010 not in srcs
+        assert report.skipped_no_mapping >= 1
+
+    def test_threshold_passed_through(self, tmp_path: Path) -> None:
+        # Same ROM in both versions, but raise the threshold above
+        # the run length so every mapping is culled.
+        root, src_driver, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text='comment(0x8000, "x", inline=True)\n',
+        )
+        project = resolve_project_context(root)
+        report = propose_translations(
+            project,
+            source_version="1.0",
+            target_version="2.0",
+            source_driver=src_driver,
+            threshold=10_000,
+        )
+        assert report.candidates == ()
+
+    def test_target_driver_dedup(self, tmp_path: Path) -> None:
+        # An identical comment already present in the target should
+        # be skipped via the existing dedup rule.
+        root, src_driver, tgt_driver, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text='comment(0x8000, "first byte", inline=True)\n',
+            target_driver_text='comment(0x8000, "first byte", inline=True)\n',
+        )
+        project = resolve_project_context(root)
+        report = propose_translations(
+            project,
+            source_version="1.0",
+            target_version="2.0",
+            source_driver=src_driver,
+            target_driver=tgt_driver,
+        )
+        assert report.candidates == ()
+        assert report.skipped_target_has_annotation >= 1
+
+    def test_missing_source_driver_raises(self, tmp_path: Path) -> None:
+        root, _, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text="",
+        )
+        project = resolve_project_context(root)
+        with pytest.raises(FileNotFoundError, match="source driver"):
+            propose_translations(
+                project,
+                source_version="1.0",
+                target_version="2.0",
+                source_driver=tmp_path / "nope.py",
+            )
+
+    def test_unknown_version_raises(self, tmp_path: Path) -> None:
+        root, src_driver, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text="",
+        )
+        project = resolve_project_context(root)
+        with pytest.raises(VersionNotInGraphError):
+            propose_translations(
+                project,
+                source_version="1.0",
+                target_version="9.9",   # not in the graph
+                source_driver=src_driver,
+            )
+
+
+class TestMakeProjectRomLoader:
+    def test_loads_rom_bytes(self, tmp_path: Path) -> None:
+        root, _, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text="",
+        )
+        project = resolve_project_context(root)
+        loader = make_project_rom_loader(project)
+        assert loader("1.0") == _LONG_ROM
+        assert loader("2.0") == _LONG_ROM
+
+    def test_caches_per_version(self, tmp_path: Path) -> None:
+        root, _, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text="",
+        )
+        project = resolve_project_context(root)
+        loader = make_project_rom_loader(project)
+        first = loader("1.0")
+        # Delete the file; cache should keep serving.
+        (tmp_path / "versions/demo-1.0/rom/demo-1.0.rom").unlink()
+        assert loader("1.0") is first
+
+    def test_missing_rom_raises_file_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        root, _, _, _ = _bootstrap_project(
+            tmp_path,
+            rom_a=_LONG_ROM,
+            rom_b=_LONG_ROM,
+            source_driver_text="",
+        )
+        project = resolve_project_context(root)
+        loader = make_project_rom_loader(project)
+        # Remove the ROM bytes for 2.0 before asking for it.
+        (tmp_path / "versions/demo-2.0/rom/demo-2.0.rom").unlink()
+        with pytest.raises(FileNotFoundError, match="ROM not found"):
+            loader("2.0")

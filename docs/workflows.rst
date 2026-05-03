@@ -382,6 +382,38 @@ The defining workflow when porting annotations across releases.
    target driver yourself, run ``fantasm disassemble`` and
    ``fantasm verify`` to confirm nothing broke, and iterate.
 
+For project scripts that need to drive the same engine
+programmatically — e.g. a ``generate_<new_version>.py`` baseline
+generator — call :func:`fantasm.api.backfill.propose_translations`
+directly:
+
+.. code-block:: python
+
+   from pathlib import Path
+
+   from fantasm.api.backfill import propose_translations
+   from fantasm.config import resolve_project_context
+
+   project = resolve_project_context(Path("."))
+   report = propose_translations(
+       project,
+       source_version="4.18",
+       target_version="4.21_variant_1",
+       source_driver=Path("versions/anfs-4.18/disassemble/disasm_anfs_418.py"),
+       threshold=10,
+   )
+   for candidate in report.candidates:
+       ...   # render into the new driver
+   # report.skipped_no_mapping is the count to route to '# UNMAPPED:'
+
+Anchoring is identical to the CLI: every candidate sits inside a
+composed shared block of ``threshold`` opcodes through the
+version graph (the weakest hop binds). Source addresses outside
+such a block produce no candidate — the consumer is expected to
+route those to ``# UNMAPPED:`` rather than silently fall back to
+identity, which is the failure mode the threshold protects
+against.
+
 Cross-version diff:
 
 .. code-block:: bash
