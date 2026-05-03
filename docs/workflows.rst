@@ -405,6 +405,17 @@ The map combines an LCS-derived "primary" mapping with a seed-and-
 extend "supplementary" pass that catches reordered blocks the LCS
 misses. Use ``--primary-only`` to see just the LCS mappings.
 
+Every emitted mapping is anchored in a contiguous run of ≥
+``--threshold`` matching opcodes (default 5, matching ``fantasm
+backfill``). Source addresses outside such a run are absent from
+the output (rendered as ``(no mapping)`` when queried with
+``--addr``). Short coincidence matches are silently wrong whenever
+the surrounding code has diverged — the threshold protects callers
+who would otherwise see e.g. ``&A84D → &A84D`` when in fact the
+target ROM has unrelated code at that numeric address. Lower
+``--threshold 1`` deliberately when working on tiny ROMs where the
+default would cull legitimate matches.
+
 
 I want to find a specific byte sequence in a ROM
 ------------------------------------------------

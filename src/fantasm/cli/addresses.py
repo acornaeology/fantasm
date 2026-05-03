@@ -40,9 +40,14 @@ def addresses() -> None:
 @click.option(
     "--threshold",
     type=click.IntRange(1, 1000),
-    default=1,
+    default=5,
     show_default=True,
-    help="Minimum block_length confidence to include in output.",
+    help=(
+        "Minimum anchored shared-block length (in opcodes) for a "
+        "mapping to be emitted. Defaults to 5 to match "
+        "``fantasm backfill``; lower deliberately when working with "
+        "tiny ROMs or fixtures."
+    ),
 )
 @cpu_option
 @rom_base_option
@@ -84,7 +89,10 @@ def addresses_map(
     rom_target = files_target.rom_filepath.read_bytes()
 
     full_map, primary_map, supplementary_map, _blocks = build_full_address_map(
-        rom_source, rom_target, cpu_a=cpu, cpu_b=cpu, rom_base=rom_base
+        rom_source, rom_target,
+        cpu_a=cpu, cpu_b=cpu,
+        rom_base=rom_base,
+        min_block_length=threshold,
     )
 
     if include_supplementary:

@@ -13,6 +13,18 @@ take ``rom_base`` as a parameter (default ``0x8000``).
 
 Returns address mappings as ``dict[int, int]`` keyed by ROM address
 (e.g. ``0xA000 -> 0xA1B4``).
+
+**Anchoring contract.** Every emitted mapping is anchored in a
+contiguous run of ≥ ``min_block_length`` matching opcodes (the LCS
+"equal" run for the primary map; a single ``get_matching_blocks()``
+sub-block for the supplementary map). Source addresses that don't
+lie inside such a run are absent from the dict, so consumers must
+explicitly handle "no mapping available" (``KeyError`` /
+``dict.get(...) is None``). The default threshold is 5 — short runs
+are coincidental opcode coincidences that misleadingly suggest a
+per-instruction correspondence where the surrounding code has
+actually diverged. Lower the threshold deliberately when working on
+tiny test fixtures.
 """
 
 from __future__ import annotations
@@ -48,8 +60,21 @@ def build_primary_map(
     insts_a: Sequence[tuple[int, int, int]],
     insts_b: Sequence[tuple[int, int, int]],
     rom_base: int = 0x8000,
+    *,
+    min_block_length: int = 5,
 ) -> dict[int, int]:
-    """LCS-based opcode mapping. Order-preserving; misses reorders."""
+    """LCS-based opcode mapping. Order-preserving; misses reorders.
+
+    Only ``equal`` runs of length ≥ ``min_block_length`` contribute
+    mappings. Shorter runs are dropped because they tend to be
+    coincidental opcode-value matches that produce misleading
+    identity-like mappings in regions where the surrounding code
+    has actually diverged (see issue #10). Pass
+    ``min_block_length=1`` deliberately when working on tiny test
+    fixtures.
+    """
+    if min_block_length < 1:
+        raise ValueError("min_block_length must be >= 1")
     opcodes_a = [op for _, op, _ in insts_a]
     opcodes_b = [op for _, op, _ in insts_b]
     matcher = difflib.SequenceMatcher(
@@ -57,11 +82,14 @@ def build_primary_map(
     )
     addr_map: dict[int, int] = {}
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            for d in range(i2 - i1):
-                addr_map[rom_base + insts_a[i1 + d][0]] = (
-                    rom_base + insts_b[j1 + d][0]
-                )
+        if tag != "equal":
+            continue
+        if i2 - i1 < min_block_length:
+            continue
+        for d in range(i2 - i1):
+            addr_map[rom_base + insts_a[i1 + d][0]] = (
+                rom_base + insts_b[j1 + d][0]
+            )
     return addr_map
 
 
@@ -89,6 +117,7 @@ def find_relocated_blocks(
     min_seeds: int = 2,
     max_seed_gap: int = 8,
     min_block_opcodes: int = 8,
+    min_match_length: int = 5,
     min_ratio: float = 0.85,
 ) -> tuple[dict[int, int], list[RelocatedBlock]]:
     """Find supplementary opcode-level mappings via k-mer seed-and-extend.
@@ -98,9 +127,20 @@ def find_relocated_blocks(
     Conflicts with the primary map are not allowed: the primary map
     is authoritative.
 
+    ``min_block_opcodes`` filters out *candidate windows* shorter
+    than that. ``min_match_length`` then filters individual matching
+    sub-blocks within an aligned window — so even when a long
+    candidate window is accepted, mappings only come from contiguous
+    runs of ≥ ``min_match_length`` matching opcodes inside it
+    (mirroring the LCS-run gate the primary map applies). This
+    prevents stray single-opcode coincidences inside an aligned
+    window from generating per-instruction mappings (see issue #10).
+
     Returns ``(supplementary_map, blocks)``. ``supplementary_map`` has
     no overlap with ``primary_addr_map``.
     """
+    if min_match_length < 1:
+        raise ValueError("min_match_length must be >= 1")
     if len(insts_a) < k or len(insts_b) < k:
         return {}, []
 
@@ -186,6 +226,8 @@ def find_relocated_blocks(
         first_a = first_b = None
         last_a_end = last_b_end = None
         for mb in mblocks:
+            if mb.size < min_match_length:
+                continue
             for d in range(mb.size):
                 a_idx = i_lo + mb.a + d
                 b_idx = j_lo + mb.b + d
@@ -232,16 +274,34 @@ def build_full_address_map(
     cpu_b: str = "6502",
     *,
     rom_base: int = 0x8000,
+    min_block_length: int = 5,
     **kwargs,
 ) -> tuple[dict[int, int], dict[int, int], dict[int, int], list[RelocatedBlock]]:
     """Primary + supplementary opcode-level address map in one call.
 
+    Every emitted mapping is anchored in a contiguous run of ≥
+    ``min_block_length`` matching opcodes (LCS run for primary,
+    matching sub-block for supplementary). Source addresses outside
+    such a run are absent from the dict — consumers must explicitly
+    handle "no mapping available". This is the contract that
+    ``fantasm shared`` and ``fantasm backfill`` already follow; see
+    issue #10 for the incident that motivated the threshold.
+
     Returns ``(full_map, primary_map, supplementary_map, blocks)``.
     Primary mappings take precedence on conflict.
+
+    Tiny test fixtures (a handful of instructions) need
+    ``min_block_length=1`` to produce any mappings — the default of
+    5 is calibrated for real-ROM-sized inputs.
     """
     insts_a = disassemble_to_opcodes(data_a, cpu_a)
     insts_b = disassemble_to_opcodes(data_b, cpu_b)
-    primary = build_primary_map(insts_a, insts_b, rom_base=rom_base)
+    primary = build_primary_map(
+        insts_a, insts_b,
+        rom_base=rom_base,
+        min_block_length=min_block_length,
+    )
+    kwargs.setdefault("min_match_length", min_block_length)
     supplementary, blocks = find_relocated_blocks(
         insts_a, insts_b, primary, rom_base=rom_base, **kwargs
     )
