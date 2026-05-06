@@ -68,7 +68,7 @@ without confusing fantasm.
   ``"nmos"`` (alias), ``"65c02"``, ``"65sc12"``, ``"65c12"``,
   ``"cmos"`` (alias). fantasm's audit / cfg / context / compare
   commands read this default so the right opcode table is used. A
-  driver can pass a different CPU to py8dis's ``load()`` for a
+  driver can pass a different CPU to the disassembler for a
   specific version (ANFS 4.21 does this — base default of 6502 with
   the driver overriding to 65c02).
 * ``base_address`` — defaults to ``0x8000`` (BBC sideways-ROM
@@ -98,7 +98,7 @@ without confusing fantasm.
   used as a single-element fallback.
 
 * ``driver_dirname`` — subdirectory under each version directory
-  holding the py8dis driver script. Default ``"disassemble"``.
+  holding the disassembly driver script. Default ``"disassemble"``.
 
 * ``driver_filename`` — filename template for the driver. Tokens:
   ``{prefix}``, ``{version_id}``, ``{version_id_no_dots}``. The
@@ -150,11 +150,12 @@ Two lists at the project level. Both are optional.
 
 When ``fantasm`` 0.4.0+ runs ``lint``, the JSON's own
 ``external_labels`` map is consulted directly, so a workspace address
-declared via py8dis's ``external_label()`` *does not* need a matching
-``[memory]`` entry. ``[memory]`` regions still cover addresses that
-the driver references but doesn't formally declare — typically
-hardware registers and OS workspace pages where the project doesn't
-want a name for every byte.
+declared via the driver's ``external_label()`` (the same call shape
+on both dasmos and py8dis) *does not* need a matching ``[memory]``
+entry. ``[memory]`` regions still cover addresses that the driver
+references but doesn't formally declare — typically hardware
+registers and OS workspace pages where the project doesn't want a
+name for every byte.
 
 A version can override ``regions`` (but not ``external_regions`` —
 hardware mapping is invariant) by setting ``memory.regions`` in its

@@ -468,24 +468,26 @@ def find_undeclared_subs(json_filepath: str | Path) -> list[dict]:
 
 # --- placeholder-label scanning ---------------------------------------
 #
-# py8dis auto-discovers routines via code-flow analysis (JSR / branch
-# targets) and, when the driver script doesn't declare them, emits
-# placeholder names ending in the address in lowercase hex:
+# Tracing disassemblers auto-discover routines via code-flow analysis
+# (JSR / branch targets) and, when the driver script doesn't declare
+# them, emit placeholder names ending in the address in lowercase hex:
 #
 #   .lXXXX        — pure auto-label (data-flow target)
 #   .cXXXX        — pure auto-label (code-flow target)
 #   .sub_cXXXX    — auto-discovered subroutine, no driver decl.
 #   .loop_cXXXX   — auto-discovered loop entry, no driver decl.
 #
+# Both dasmos and py8dis use this naming convention by default.
 # These names are visible in ``output/<ver>.asm`` but never reach the
 # JSON's ``subroutines`` list — so the regular subroutine audit can't
 # flag them. Project CI needs an independent scan against the asm.
 
 # XXXX is exactly four lowercase hex digits. The optional ``([a-z]+_)``
-# prefix tolerates ``sub_`` and ``loop_`` (and anything similar py8dis
-# might add) without false-positiving on legitimate semantic names that
-# happen to end in hex-looking characters (e.g. ``.spool_tx_succeeded``
-# ends in ``ceeded`` — eight chars, not the right shape).
+# prefix tolerates ``sub_`` and ``loop_`` (and anything similar the
+# disassembler might add) without false-positiving on legitimate
+# semantic names that happen to end in hex-looking characters
+# (e.g. ``.spool_tx_succeeded`` ends in ``ceeded`` — eight chars, not
+# the right shape).
 _PLACEHOLDER_LABEL_RE = re.compile(
     r"^\.(?P<prefix>[a-z]+_)?(?P<core>[lc])(?P<addr>[0-9a-f]{4})\s*$"
 )
@@ -500,7 +502,7 @@ _PLACEHOLDER_KIND = {
 
 @dataclass(frozen=True)
 class PlaceholderLabel:
-    """A py8dis-auto-discovered routine carrying a hex-tail placeholder.
+    """A tracer-auto-discovered routine carrying a hex-tail placeholder.
 
     These names are visible in ``output/<ver>.asm`` but never reach
     the JSON's declared ``subroutines`` list, so the regular audit

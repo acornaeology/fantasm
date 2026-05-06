@@ -10,8 +10,9 @@ Tables for both the NMOS 6502 (the ubiquitous variant) and the CMOS
 constants directly for the NMOS tables and the ``OPCODE_*_65C02``
 constants for the CMOS tables.
 
-Source for the 65C02 overrides: ``py8dis/cpu65C02.py`` in the local
-fork.
+Source for the 65C02 overrides: ``py8dis/cpu65C02.py`` in the
+acornaeology py8dis fork (also reflected in dasmos's
+``ext/cpus/cpu65c02``).
 """
 
 from __future__ import annotations

@@ -96,10 +96,10 @@ class TestTerminatorClassification:
         assert candidates[0].hook_function == "stringz_hook"
 
     def test_stringhi_via_bit7_next_byte(self) -> None:
-        # py8dis encodes stringhi asymmetrically: the bit-7
-        # terminator lives as the first byte of the *next* item,
-        # not as the last byte of the string. Here the printed
-        # text has no terminator on its own.
+        # The disassembler encodes stringhi asymmetrically: the
+        # bit-7 terminator lives as the first byte of the *next*
+        # item, not as the last byte of the string. Here the
+        # printed text has no terminator on its own.
         items = []
         for i in range(3):
             base = 0x8000 + i * 0x100

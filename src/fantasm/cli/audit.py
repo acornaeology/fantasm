@@ -33,7 +33,7 @@ def audit() -> None:
 @report_output(reports={
     "summary": "Subroutine summary",
     "placeholders": (
-        "py8dis-auto-discovered routines still carrying hex-tail "
+        "tracer-auto-discovered routines still carrying hex-tail "
         "placeholder names in the asm output"
     ),
 })
@@ -78,14 +78,14 @@ def audit_summary(version_id: str, flag: str | None) -> Reports:
 @audit.command(
     "placeholders",
     help=(
-        "List py8dis-auto-discovered routines still carrying hex-tail "
+        "List tracer-auto-discovered routines still carrying hex-tail "
         "placeholder names (e.g. .sub_cXXXX, .loop_cXXXX, .lXXXX, "
-        ".cXXXX) in the asm output. Each one is a routine that "
-        "py8dis traced via code-flow analysis but the driver script "
-        "has not declared with a meaningful name; they're invisible "
-        "to ``audit summary`` because they never reach the JSON's "
-        "``subroutines`` list. Exit code is non-zero only on "
-        "argument / I/O errors — use the row count for CI gating."
+        ".cXXXX) in the asm output. Each one is a routine the "
+        "disassembler traced via code-flow analysis but the driver "
+        "script has not declared with a meaningful name; they're "
+        "invisible to ``audit summary`` because they never reach "
+        "the JSON's ``subroutines`` list. Exit code is non-zero only "
+        "on argument / I/O errors — use the row count for CI gating."
     ),
 )
 @click.argument("version_id")
@@ -102,8 +102,8 @@ def _build_placeholders_table(actx, version_id: str) -> TableContent:
 
     Tolerates a missing asm file by emitting an empty table — that
     way ``audit summary`` doesn't gain a hard dependency on a fresh
-    py8dis run, and a project without asm output simply reports
-    zero placeholders.
+    disassembly run, and a project without asm output simply
+    reports zero placeholders.
     """
     if actx.files.asm_filepath.exists():
         labels = find_placeholder_labels(actx.asm_lines)
@@ -114,7 +114,7 @@ def _build_placeholders_table(actx, version_id: str) -> TableContent:
             title=f"Placeholder labels in {version_id}",
             description=(
                 f"{len(labels)} hex-tail placeholder name(s) — every "
-                "row is a py8dis-auto-discovered routine that the "
+                "row is a tracer-auto-discovered routine that the "
                 "driver hasn't named yet"
             ),
         )

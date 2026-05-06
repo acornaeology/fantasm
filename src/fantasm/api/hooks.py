@@ -1,9 +1,13 @@
 """Detect missing print-inline ``hook_subroutine()`` declarations.
 
 A common cause of long unannotated ``byte`` runs in Acorn-style
-6502 ROMs is a missing py8dis ``hook_subroutine()`` for a
-print-inline helper (``stringz`` / ``stringcr`` / ``stringhi``
-style). The shape of the missing hook in py8dis JSON output is:
+6502 ROMs is a missing ``hook_subroutine()`` for a print-inline
+helper (``stringz`` / ``stringcr`` / ``stringhi`` style). The
+``hook_subroutine`` API and the bundled hook names are shared
+between the supported disassembler libraries (dasmos and py8dis),
+so the same detection logic applies regardless of which one the
+driver targets. The shape of the missing hook in driver JSON
+output is:
 
 .. code-block:: text
 
@@ -17,9 +21,9 @@ style). The shape of the missing hook in py8dis JSON output is:
                             items because the hook wasn't wired up
 
 Once ``hook_subroutine(<target>, name, <kind>_hook)`` is added to
-the driver, py8dis treats the post-JSR bytes correctly and emits
-the resume code as ``code`` items. Until then, every call site
-contributes a mysterious unannotated byte run downstream.
+the driver, the disassembler treats the post-JSR bytes correctly
+and emits the resume code as ``code`` items. Until then, every
+call site contributes a mysterious unannotated byte run downstream.
 
 This module surfaces the missing hook by looking at the
 *pattern at every call site*, not at the byte runs in isolation.
@@ -36,14 +40,15 @@ from dataclasses import dataclass
 from .mos6502 import opcode_tables
 
 
-# Hook-kind names as they appear in py8dis driver scripts.
+# Hook-kind names as they appear in driver scripts (the same
+# stringz / stringcr / stringhi naming is used by dasmos and py8dis).
 _KIND_HI = "stringhi"
 _KIND_Z = "stringz"
 _KIND_CR = "stringcr"
 _KIND_UNKNOWN = "unknown"
 
-# Map terminator-kind → name of the py8dis hook function the user
-# would name in ``hook_subroutine(addr, name, <hook_fn>)``.
+# Map terminator-kind → name of the driver-API hook function the
+# user would name in ``hook_subroutine(addr, name, <hook_fn>)``.
 _HOOK_FN = {
     _KIND_HI: "stringhi_hook",
     _KIND_Z: "stringz_hook",
@@ -79,7 +84,10 @@ class HookCandidate:
 
     @property
     def hook_function(self) -> str | None:
-        """py8dis hook function name, or ``None`` for ``unknown`` kind."""
+        """Hook function name (e.g. ``stringz_hook``), or ``None``
+        for ``unknown`` kind. The same names are used by dasmos and
+        py8dis.
+        """
         return _HOOK_FN[self.hook_kind]
 
 
@@ -89,7 +97,8 @@ def _classify_terminator(
 ) -> str:
     """Identify the print-inline kind from the post-JSR items.
 
-    py8dis encodes terminators asymmetrically:
+    The driver-emitted JSON encodes terminators asymmetrically
+    (the same shape from dasmos and py8dis):
 
     - ``stringz`` and ``stringcr`` include the terminator (``0x00``
       or ``0x0D``) as the last byte of the string item.
@@ -146,8 +155,9 @@ def find_hook_candidates(
     """Find JSR targets with the missing-print-inline-hook signature.
 
     Walks ``items`` linearly. For each ``code`` item with
-    ``mnemonic == "jsr"`` (or ``jmp``, which py8dis tail-calls
-    treat similarly), the next two items are inspected:
+    ``mnemonic == "jsr"`` (or ``jmp``, which the disassembler
+    treats similarly when used as a tail-call), the next two items
+    are inspected:
 
     - The first must be a ``string`` item.
     - The second must be a ``byte`` item whose ``bytes`` decode as
@@ -188,7 +198,7 @@ def find_hook_candidates(
         if target is None:
             continue
         total_calls[target] = total_calls.get(target, 0) + 1
-        # Cache an existing label if py8dis assigned one.
+        # Cache an existing label if the disassembler assigned one.
         if target not in target_labels:
             target_label = item.get("target_label") or ""
             if target_label:

@@ -48,9 +48,12 @@ Or for a one-off install:
 pip install fantasm
 ```
 
-The disassembly itself is performed by [py8dis](https://github.com/acornaeology/py8dis)
-through per-version driver scripts; fantasm consumes the artefacts
-those scripts emit (`.asm`, `.json`). Round-trip verification needs
+The disassembly itself is performed by a per-version Python driver
+script — typically built on
+[dasmos](https://github.com/acornaeology/dasmos) or
+[py8dis](https://github.com/acornaeology/py8dis), but fantasm only
+sees the artefacts those scripts emit (`.asm`, `.json`) and stays
+disassembler-agnostic. Round-trip verification needs
 [beebasm](https://github.com/stardot/beebasm) on `PATH`.
 
 ## CLI
@@ -82,9 +85,9 @@ Commands:
   context      Code context queries (depth, sub-context, uncommented gaps).
   coverage     Report the disassembly's inline-comment coverage as a single...
   data         Data-declaration review (runs, heuristic reclassification).
-  disassemble  Run the version's py8dis driver script to (re-)generate the...
+  disassemble  Run the version's disassembly driver script to (re-)generate...
   fingerprint  Fingerprint each block of a ROM version's bytes and report...
-  hooks        py8dis hook_subroutine() discovery and review.
+  hooks        hook_subroutine() discovery and review.
   info         Show the resolved project context.
   labels       Auto-generated label classification and renaming.
   lint         Validate that a driver script's annotation addresses...
@@ -202,9 +205,13 @@ scripts/                 README generator + Jinja2 template
 
 ## Related projects
 
-- [py8dis (fork)](https://github.com/acornaeology/py8dis) — the tracing
-  disassembler fantasm builds on top of (will eventually become
-  `msabeeb`).
+- [dasmos](https://github.com/acornaeology/dasmos) — the tracing
+  disassembler fantasm now builds on top of (a Python rewrite of
+  py8dis with a stable API and stricter classification semantics).
+- [py8dis (fork)](https://github.com/acornaeology/py8dis) — the
+  predecessor disassembler; driver scripts written against py8dis
+  still work end-to-end with fantasm, since fantasm runs them as a
+  subprocess and only consumes the JSON / asm output.
 - The four sibling repositories under `acornaeology` from which fantasm
   draws its initial tooling: `acorn-6502-tube-client`, `acorn-adfs`,
   `acorn-econet-bridge`, `acorn-nfs`.

@@ -96,7 +96,7 @@ def suggest_for_instruction(
     Logic order:
 
     1. JSR / JMP to a target in ``declared_subs`` returns ``None`` —
-       py8dis already emits the subroutine's title.
+       the disassembler already emits the subroutine's title.
     2. If the item's operand contains any key from ``label_hints``,
        and the mnemonic has a load/store template, returns the
        templated suggestion (``"Get channel flags"``, etc.).

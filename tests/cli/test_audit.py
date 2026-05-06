@@ -125,7 +125,8 @@ class TestAuditPlaceholders:
     def test_missing_asm_does_not_break_summary(self, tmp_path: Path) -> None:
         # ``audit summary`` keeps working when the asm output isn't
         # present — the placeholders block is just empty. Avoids
-        # making summary newly hard-dependent on a fresh py8dis run.
+        # making summary newly hard-dependent on a fresh disassembly
+        # run.
         runner, _ = self._bootstrap(tmp_path)
         result = runner.invoke(
             main,

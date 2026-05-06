@@ -36,7 +36,8 @@ def lint_annotations(
     actx = analysis_context(click.get_current_context(), version_id)
     # Per-address valid set: items, sub_labels, external_labels,
     # subroutines, and the full ROM range. The set covers anything
-    # py8dis emitted into the JSON. Workspace regions outside that
+    # the disassembler emitted into the JSON (dasmos and py8dis
+    # share the same JSON shape). Workspace regions outside that
     # set still come from the version graph (effective_regions).
     valid_addresses = valid_addresses_from_data(actx.data)
     annotations = extract_annotations(driver_filepath.read_text())

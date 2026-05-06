@@ -9,12 +9,13 @@ workflow on annotated 6502 disassemblies:
 
 - :func:`find_classification_candidates` applies three
   heuristic classifiers (padding, string, code) to runs of bytes
-  py8dis flagged as raw ``byte`` data, surfacing spans that
-  *might* actually be strings, valid code, or ROM padding —
-  candidates for reclassification with stricter py8dis
-  declarations.
+  the disassembler flagged as raw ``byte`` data, surfacing spans
+  that *might* actually be strings, valid code, or ROM padding —
+  candidates for reclassification with stricter declarations in
+  the driver.
 
-Both functions read py8dis JSON items directly. The classifiers
+Both functions read the disassembler JSON items directly (dasmos
+and py8dis emit the same shape). The classifiers
 are designed to be used both as a suite (via the orchestrator) and
 individually (the ``looks_like_*`` functions accept a raw
 ``bytes`` span).
@@ -428,8 +429,8 @@ def find_classification_candidates(
 
     For each contiguous run of items whose type is in
     ``target_types`` (default ``("byte",)`` — the catch-all bucket
-    py8dis emits for unclassified data), concatenate the run's
-    bytes and apply the classifiers in priority order:
+    the disassembler emits for unclassified data), concatenate the
+    run's bytes and apply the classifiers in priority order:
     **padding → string → hi_bytes_table → code**. The first
     classifier to claim bytes at a given offset wins; the cursor
     advances past the match before the next classifier runs.
@@ -445,8 +446,8 @@ def find_classification_candidates(
     by length descending so the most-interesting candidates
     surface first. Spans that no classifier claims do not appear
     in the output (the user is interested in candidates *for*
-    reclassification, not in noting that py8dis already got the
-    rest right).
+    reclassification, not in noting that the disassembler already
+    got the rest right).
     """
     types = set(target_types)
     findings: list[Classification] = []

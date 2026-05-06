@@ -38,10 +38,10 @@ def test_lint_annotations(tmp_path: Path) -> None:
 
 
 def test_lint_accepts_external_label_addresses(tmp_path: Path) -> None:
-    """Workspace addresses declared via py8dis ``external_label()`` must
-    be accepted by ``fantasm lint`` without each project re-declaring
-    them in ``[memory] regions`` — the JSON's ``external_labels`` map
-    is authoritative.
+    """Workspace addresses declared via the driver's
+    ``external_label()`` must be accepted by ``fantasm lint`` without
+    each project re-declaring them in ``[memory] regions`` — the
+    JSON's ``external_labels`` map is authoritative.
     """
     runner = CliRunner()
     init_project(tmp_path, runner, "demo", "demo")
@@ -86,8 +86,8 @@ def test_lint_accepts_external_label_addresses(tmp_path: Path) -> None:
 
 
 def test_lint_accepts_sub_labels_addresses(tmp_path: Path) -> None:
-    """``sub_labels`` (per-item label aliases py8dis emits for
-    move()-block source addresses) must also count as valid."""
+    """``sub_labels`` (per-item label aliases the disassembler emits
+    for move()-block source addresses) must also count as valid."""
     runner = CliRunner()
     init_project(tmp_path, runner, "demo", "demo")
     add_version(tmp_path, runner, "1.0", "demo")
@@ -104,8 +104,9 @@ def test_lint_accepts_sub_labels_addresses(tmp_path: Path) -> None:
                     "addr": 0x8000,
                     "type": "code",
                     "mnemonic": "lda",
-                    # Alias address 0x9050 -> "alt_name"; py8dis emits
-                    # this for move()-block source labels and similar.
+                    # Alias address 0x9050 -> "alt_name"; the
+                    # disassembler emits this for move()-block source
+                    # labels and similar.
                     "sub_labels": {"36944": "alt_name"},
                 },
                 {"addr": 0x8002, "type": "code", "mnemonic": "rts"},

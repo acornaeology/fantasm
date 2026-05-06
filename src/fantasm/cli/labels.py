@@ -86,8 +86,8 @@ def labels_classify(version_id: str, category: str | None) -> Reports:
 @labels.command(
     "apply",
     help=(
-        "Apply a renames TOML file to a py8dis driver script. The "
-        "TOML file should declare a `renames` array of inline "
+        "Apply a renames TOML file to a disassembly driver script. "
+        "The TOML file should declare a `renames` array of inline "
         "tables, each with `addr` (integer) and `name` (string). "
         "Writes the rewritten driver to stdout by default; pass "
         "--in-place or --output to write to a file."

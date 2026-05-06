@@ -1,4 +1,4 @@
-"""Apply label-rename edits to a py8dis driver script.
+"""Apply label-rename edits to a disassembly driver script.
 
 Pure-logic helpers for parsing label declarations and finding the
 correct insertion point inside a driver's ``# Code label renames``

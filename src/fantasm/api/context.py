@@ -367,8 +367,9 @@ def compute_coverage(
 ) -> CoverageReport:
     """Compute aggregate inline-comment coverage for ``data``.
 
-    ``data`` is a parsed py8dis JSON disassembly (the same shape
-    ``fantasm.cli_helpers.AnalysisContext.data`` produces). A code
+    ``data`` is a parsed disassembler-emitted JSON (the same shape
+    ``fantasm.cli_helpers.AnalysisContext.data`` produces — dasmos
+    and py8dis both emit it). A code
     item counts as "commented" when its ``comment_inline`` field is
     non-empty; block-level ``comment_above`` / ``comment_below`` are
     deliberately ignored — the metric of interest is per-instruction

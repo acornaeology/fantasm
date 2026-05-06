@@ -12,13 +12,13 @@ option of every command, and :doc:`configuration` for the
 I want to verify my disassembly is byte-correct
 -----------------------------------------------
 
-After every change to the py8dis driver, the load-bearing question
-is: does the regenerated ``.asm`` reassemble back to the original
-ROM bytes?
+After every change to the disassembly driver, the load-bearing
+question is: does the regenerated ``.asm`` reassemble back to the
+original ROM bytes?
 
 .. code-block:: bash
 
-   uv run fantasm disassemble 1.0      # rerun the py8dis driver
+   uv run fantasm disassemble 1.0      # rerun the disassembly driver
    uv run fantasm verify 1.0           # beebasm round-trip + byte compare
 
 * **Pass** → "Verification PASSED: N bytes match". The disassembly
@@ -26,9 +26,9 @@ ROM bytes?
 * **Fail** → "Verification FAILED: rom=Nb assembled=Mb
   first_diff=&XXXX". Look at the first differing offset; it's almost
   always either a typo'd ``constant()`` / ``label()``, an instruction
-  that py8dis decoded differently from what's in the bytes (rare; a
-  ``code()`` annotation usually fixes it), or an inline-data block
-  with wrong length.
+  that the disassembler decoded differently from what's in the bytes
+  (rare; a ``code()`` annotation usually fixes it), or an inline-data
+  block with wrong length.
 
 Sub-banked images — where the ROM file is larger than what the CPU
 sees mapped at runtime — are handled automatically: ``verify``
@@ -140,9 +140,9 @@ Combine with the analysis-side commands:
 * ``fantasm audit undeclared`` — JSR / JMP targets that lack
   ``subroutine()`` declarations. Run this after large annotation
   passes.
-* ``fantasm audit placeholders`` — py8dis-auto-discovered routines
-  that the driver script has never named. py8dis traces JSR /
-  branch targets via code-flow and emits hex-tail placeholders
+* ``fantasm audit placeholders`` — tracer-auto-discovered routines
+  that the driver script has never named. The disassembler traces
+  JSR / branch targets via code-flow and emits hex-tail placeholders
   (``.sub_cXXXX``, ``.loop_cXXXX``, ``.lXXXX``, ``.cXXXX``) for
   any address it discovers without an explicit declaration. They
   are visible in ``output/<ver>.asm`` but never reach the JSON's
@@ -250,7 +250,7 @@ heuristic classifiers to it:
   raw EQUB.
 * **String** — runs of printable ASCII (0x20–0x7E plus tab / CR /
   LF) optionally terminated by a null byte. Catches embedded
-  text that py8dis hasn't recognised as a string.
+  text that the disassembler hasn't recognised as a string.
 * **High-byte address table** — runs where every byte falls in
   the project's ROM-page band (e.g. 0x80–0xBF for a 16 KB
   sideways ROM at &8000). Catches the high-byte halves of
@@ -259,9 +259,9 @@ heuristic classifiers to it:
   0x80–0xBF exist as real 6502 instructions. The band is derived
   from the JSON's ``meta.load_addr`` / ``meta.end_addr``.
 * **Code** — every starting alignment is tried; the longest sweep
-  consuming valid 6502 opcode lengths wins. Catches code that
-  py8dis emitted as bytes (often because no ``entry()`` reached
-  it).
+  consuming valid 6502 opcode lengths wins. Catches code that the
+  disassembler emitted as bytes (often because no ``entry()``
+  reached it).
 
 Run it:
 
@@ -286,22 +286,23 @@ deserve a closer look, not as a directive to reclassify
 automatically.
 
 Use ``--target-type string`` (or word) to also re-examine items
-py8dis already classified as strings/words — useful for sanity
-checks ("did py8dis get the boundaries right?"). The default
-``--target-type byte`` is the dominant case.
+the disassembler already classified as strings/words — useful for
+sanity checks ("did the disassembler get the boundaries right?").
+The default ``--target-type byte`` is the dominant case.
 
 
 I want to find missing print-inline hooks
 -----------------------------------------
 
 A common cause of mysterious unannotated byte runs in Acorn-style
-ROMs is a missing py8dis ``hook_subroutine()`` for a print-inline
-helper. The shape: a routine that prints an inline string after
-its ``JSR`` (the bytes following each call site are
-"``EQUS "..."`` then a terminator then resume code"). Without the
-hook py8dis treats the resume code as raw bytes — and a single
-missing hook can leave dozens of mysterious byte runs strewn
-across the ROM.
+ROMs is a missing ``hook_subroutine()`` for a print-inline helper.
+The shape: a routine that prints an inline string after its ``JSR``
+(the bytes following each call site are ``EQUS "..."`` then a
+terminator then resume code). Without the hook the disassembler
+treats the resume code as raw bytes — and a single missing hook
+can leave dozens of mysterious byte runs strewn across the ROM.
+``hook_subroutine`` is the same call shape on both dasmos and
+py8dis driver APIs.
 
 ``fantasm hooks suggest`` flips the diagnostic. Instead of
 chasing each downstream byte run, it scans every JSR target and
@@ -318,7 +319,7 @@ certainly print-inline helpers waiting to be hooked.
 Two reports come back:
 
 - ``candidates`` — table form for human review: target address,
-  py8dis label if any, suggested hook kind (``stringz`` /
+  driver-assigned label if any, suggested hook kind (``stringz`` /
   ``stringcr`` / ``stringhi`` / ``unknown``), matching call-site
   count, total call-site count, confidence, and a sample of the
   inline strings observed.
@@ -332,14 +333,15 @@ Two reports come back:
   Drop these into your driver, regenerate, and the downstream
   byte runs collapse into normal code.
 
-Hook-kind detection has to deal with py8dis's asymmetric
-terminator encoding. ``stringz`` and ``stringcr`` include the
-terminator (``0x00`` or ``0x0D``) as the last byte of the string
-item, but ``stringhi`` *excludes* its bit-7 terminator — that
-byte lives as the first byte of the following item, doing double
-duty as terminator and resume opcode. The classifier therefore
-looks at both the string's last byte *and* the next item's first
-byte, applied in this priority:
+Hook-kind detection has to deal with the asymmetric terminator
+encoding the disassembler emits (the same shape from dasmos and
+py8dis). ``stringz`` and ``stringcr`` include the terminator
+(``0x00`` or ``0x0D``) as the last byte of the string item, but
+``stringhi`` *excludes* its bit-7 terminator — that byte lives as
+the first byte of the following item, doing double duty as
+terminator and resume opcode. The classifier therefore looks at
+both the string's last byte *and* the next item's first byte,
+applied in this priority:
 
 * string ends in ``0x00`` → ``stringz_hook`` (unambiguous)
 * next byte has bit 7 set → ``stringhi_hook`` (the structural
@@ -534,10 +536,10 @@ longest matches first.
 I want to promote auto-generated labels to entry points
 -------------------------------------------------------
 
-py8dis emits anonymous labels like ``c8027`` / ``l8060`` for branch
-targets and JSR targets that don't have a name yet. Turning the
-useful ones into proper ``subroutine()`` or ``entry()`` declarations
-is part of the annotation cycle.
+The disassembler emits anonymous labels like ``c8027`` / ``l8060``
+for branch targets and JSR targets that don't have a name yet.
+Turning the useful ones into proper ``subroutine()`` or ``entry()``
+declarations is part of the annotation cycle.
 
 ``fantasm promote`` scores each auto-label (call count, after-
 terminator-instruction position, JSR-vs-branch references) and
@@ -550,8 +552,8 @@ ranks them.
 
 ``fantasm labels classify`` puts each auto-label in a category
 (``subroutine``, ``shared_tail``, ``data``, ``internal_loop``,
-``internal_conditional``) so you can pick the right py8dis primitive
-to declare it with.
+``internal_conditional``) so you can pick the right driver-API
+primitive to declare it with.
 
 ``fantasm labels apply`` applies a TOML rename file to a driver
 script — useful when you want to rename a batch of auto-labels in
@@ -577,9 +579,9 @@ Useful for pasting into bug reports or readouts.
 I want to add a new subroutine declaration to a driver
 ------------------------------------------------------
 
-py8dis driver scripts conventionally keep their ``subroutine()``
-declarations sorted by address. ``fantasm sub insert`` finds the
-right line to add a new one:
+Disassembly driver scripts conventionally keep their
+``subroutine()`` declarations sorted by address.
+``fantasm sub insert`` finds the right line to add a new one:
 
 .. code-block:: bash
 

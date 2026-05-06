@@ -35,7 +35,8 @@ if TYPE_CHECKING:
 
 DEFAULT_VERSIONS_DIRNAME = "versions"
 
-# Default convention for the per-version py8dis driver script.
+# Default convention for the per-version disassembly driver script
+# (whether built on dasmos, py8dis, or any other library).
 # Tokens: {prefix}, {version_id}, {version_id_no_dots}.
 # Sibling NFS uses e.g. "disasm_anfs_310.py" for version "3.10".
 DEFAULT_DRIVER_DIRNAME = "disassemble"

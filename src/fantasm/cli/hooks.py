@@ -20,7 +20,11 @@ from ..cli_helpers import analysis_context, project_cpu
 
 @click.group(
     "hooks",
-    help="py8dis hook_subroutine() discovery and review.",
+    help=(
+        "hook_subroutine() discovery and review. The "
+        "hook_subroutine() name is shared between dasmos and "
+        "py8dis driver APIs."
+    ),
 )
 def hooks_group() -> None:
     pass

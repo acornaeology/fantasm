@@ -32,7 +32,7 @@ def build_call_graph(
     *,
     memory_regions: Iterable[tuple[int, int]] | None = None,
 ) -> nx.DiGraph:
-    """Build a call-graph DiGraph from a py8dis JSON output.
+    """Build a call-graph DiGraph from a disassembler JSON output.
 
     Nodes (keyed by ``"0xNNNN"``) represent ROM subroutines and
     external OS entry points. Edges carry ``call_sites`` (sorted list

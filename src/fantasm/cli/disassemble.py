@@ -1,17 +1,19 @@
-"""``fantasm disassemble`` — run a version's py8dis driver script.
+"""``fantasm disassemble`` — run a version's disassembly driver script.
 
 Resolves the driver filepath via fantasm.toml's
-``[versions] driver_dirname/driver_filename`` and runs it with two
-environment variables pointing at the conventional ROM and output
-locations:
+``[versions] driver_dirname/driver_filename`` and runs it as a
+subprocess with two environment variables pointing at the
+conventional ROM and output locations:
 
 - ``FANTASM_ROM``        — ``<version_dir>/rom/<prefix>-<version>.rom``
 - ``FANTASM_OUTPUT_DIR`` — ``<version_dir>/output``
 
-Drivers that already have their own per-project env-var fallbacks
-(``ACORN_NFS_ROM`` etc.) keep working — fantasm sets the
-project-agnostic names alongside; the driver picks whichever it
-recognises.
+The driver itself is library-agnostic — typically built on
+:mod:`dasmos` or :mod:`py8dis`, but fantasm only sees the artefacts
+it emits (``.asm``, ``.json``). Drivers that already have their own
+per-project env-var fallbacks (``ACORN_NFS_ROM`` etc.) keep working
+— fantasm sets the project-agnostic names alongside; the driver
+picks whichever it recognises.
 
 The command exits with the driver script's own return code, so a
 non-zero exit propagates straight back through CI.
@@ -31,7 +33,7 @@ from ..cli_helpers import analysis_context
 @click.command(
     "disassemble",
     help=(
-        "Run the version's py8dis driver script to (re-)generate "
+        "Run the version's disassembly driver script to (re-)generate "
         "the .asm and .json disassembly artefacts. The driver lives "
         "at <versions>/<prefix>-<VERSION_ID>/<driver_dirname>/"
         "<driver_filename> and is run with FANTASM_ROM and "

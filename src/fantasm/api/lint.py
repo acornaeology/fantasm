@@ -3,7 +3,8 @@
 Pure-logic helpers for validating that:
 
 1. Annotation addresses (``comment``/``subroutine``/``label``) in a
-   driver script correspond to addresses that py8dis actually emitted.
+   driver script correspond to addresses the disassembler actually
+   emitted.
 2. Doc addresses cited from ``rom.json`` ``address_links`` map to a
    covered range.
 3. Glossary links resolve.
@@ -76,7 +77,7 @@ def extract_annotations(driver_text: str) -> list[dict]:
     the full call (across continuation lines) contains
     ``is_entry_point=False``, in which case it is ``"metadata_only"``
     (the call is documentation-only and the address shouldn't be
-    expected to appear in py8dis output).
+    expected to appear in the disassembler output).
     """
     lines = driver_text.splitlines()
     annotations: list[dict] = []

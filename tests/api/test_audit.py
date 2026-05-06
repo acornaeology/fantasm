@@ -356,9 +356,9 @@ class TestFindPlaceholderLabels:
         assert find_placeholder_labels(lines) == []
 
     def test_uppercase_hex_not_matched(self) -> None:
-        # py8dis emits placeholders with lowercase hex; matching
-        # uppercase would catch unrelated semantic names like
-        # ``.cAVE`` or ``.lCD``. Stay strict.
+        # The disassembler emits placeholders with lowercase hex;
+        # matching uppercase would catch unrelated semantic names
+        # like ``.cAVE`` or ``.lCD``. Stay strict.
         assert find_placeholder_labels([".lABCD\n", ".cFFFF\n"]) == []
 
     def test_short_or_long_hex_tails_not_matched(self) -> None:
@@ -368,8 +368,8 @@ class TestFindPlaceholderLabels:
         assert find_placeholder_labels(lines) == []
 
     def test_indented_labels_not_matched(self) -> None:
-        # py8dis emits labels at column 0; an indented match would
-        # most likely be a comment or a string literal.
+        # The disassembler emits labels at column 0; an indented
+        # match would most likely be a comment or a string literal.
         lines = ["  .l944c\n", "\t.sub_c8a6c\n"]
         assert find_placeholder_labels(lines) == []
 

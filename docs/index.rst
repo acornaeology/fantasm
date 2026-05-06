@@ -11,11 +11,15 @@ The Fantastic (dis-/re-)Assembly tools for 6502 code.
 
 ``fantasm`` is a Python library and CLI for working with annotated 6502
 disassemblies. It consumes the JSON / ASM / driver-script artefacts a
-py8dis run produces and exposes them through a coherent set of
-sub-commands: round-trip verification, annotation linting, basic-block
-and call-graph analysis, cross-version annotation diffing,
-opcode-level address mapping between versions, and propagation of
-annotations along a project's version DAG.
+disassembly run produces — typically from
+`dasmos <https://github.com/acornaeology/dasmos>`_ or
+`py8dis <https://github.com/acornaeology/py8dis>`_, but fantasm only
+sees the output and stays disassembler-agnostic — and exposes them
+through a coherent set of sub-commands: round-trip verification,
+annotation linting, basic-block and call-graph analysis,
+cross-version annotation diffing, opcode-level address mapping
+between versions, and propagation of annotations along a project's
+version DAG.
 
 It is the consolidation of the per-project ``disasm_tools/`` packages
 that used to live in `acorn-nfs`_, `acorn-adfs`_, `acorn-econet-bridge`_
@@ -33,7 +37,7 @@ Where to start
 
 * **Brand new to fantasm?** Read :doc:`getting_started`. It walks
   through the first hour: install, ``fantasm project init``, dropping
-  in a py8dis driver, running the first ``disassemble`` /
+  in a disassembly driver script, running the first ``disassemble`` /
   ``verify`` / ``lint`` cycle.
 
 * **Setting up a new project's** ``fantasm.toml`` **?** See

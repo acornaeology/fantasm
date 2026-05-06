@@ -68,8 +68,8 @@ def analyze_labels(data: dict) -> list[dict]:
                 data_separated.add(item["addr"])
                 break
 
-    # Items previously declared as entry points (py8dis emits a
-    # "*****" comment-before banner for them).
+    # Items previously declared as entry points (the disassembler
+    # emits a "*****" comment-before banner for them).
     entry_addrs: set[int] = set()
     for item in items:
         for cb in item.get("comments_before", []):

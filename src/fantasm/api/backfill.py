@@ -1,10 +1,11 @@
 """Back-propagate annotations between ROM versions.
 
 Builds an opcode-level confidence map between two ROM images and
-parses py8dis driver scripts to extract their annotations
-(``comment``/``label``/``subroutine`` calls). Together these let
-annotations from a richly-annotated version flow back to less
-annotated ones via the high-confidence portion of the address map.
+parses disassembly driver scripts to extract their annotations
+(``comment``/``label``/``subroutine`` calls — the same call shape
+in dasmos and py8dis). Together these let annotations from a
+richly-annotated version flow back to less annotated ones via
+the high-confidence portion of the address map.
 
 Sibling ``disasm_tools.backfill`` (621 lines, byte-identical across
 forks) carried two heavy NFS-specific pieces:

@@ -3,19 +3,35 @@ Getting started
 
 This page walks through bringing a brand-new project under fantasm.
 By the end you will have a working ``fantasm.toml``, a single ROM
-version registered, a py8dis driver that produces ``.asm`` and
-``.json`` artefacts, and a CI-ready ``disassemble → lint → verify``
-pipeline.
+version registered, a disassembly driver script that produces
+``.asm`` and ``.json`` artefacts, and a CI-ready
+``disassemble → lint → verify`` pipeline.
 
 What fantasm does — and doesn't
 -------------------------------
 
-``fantasm`` operates on the **output** of `py8dis`_ — a programmable
-6502 disassembler that turns ROM bytes plus an annotation script into
-a ``.asm`` listing and a ``.json`` index. fantasm does not perform
-the disassembly itself; instead it provides:
+``fantasm`` operates on the **output** of a per-version
+disassembly driver — a Python script that turns ROM bytes plus an
+annotation script into a ``.asm`` listing and a ``.json`` index.
+The driver typically uses one of:
 
-* a CLI for orchestrating per-version py8dis runs
+* `dasmos`_ — the current recommendation. A pluggable tracing
+  disassembler with a stable 1.0 API, byte-faithful round-trip
+  guarantees, and bundled BBC-Micro / 6502 environments.
+* `py8dis`_ — the predecessor library. Existing py8dis drivers
+  continue to work end-to-end with fantasm; new projects should
+  reach for dasmos.
+
+fantasm itself is disassembler-agnostic — it runs the driver as a
+subprocess and reads the artefacts. The same fantasm install
+handles dasmos and py8dis projects side by side, and a project can
+migrate from one to the other without touching its fantasm
+configuration.
+
+fantasm does not perform the disassembly itself; instead it
+provides:
+
+* a CLI for orchestrating per-version disassembly runs
   (``fantasm disassemble VID``);
 * round-trip verification against `beebasm`_
   (``fantasm verify VID``);
@@ -23,11 +39,13 @@ the disassembly itself; instead it provides:
   across versions, and annotation propagation along a multi-version
   DAG.
 
-py8dis (the disassembler) and beebasm (the cross-assembler) are
-**workflow prerequisites**: they need to be available in your
-environment but fantasm doesn't ship them. Both are documented under
-:doc:`installation prerequisites <configuration>` below.
+Both the chosen disassembler library and beebasm (the
+cross-assembler) are **workflow prerequisites**: they need to be
+available in your environment but fantasm doesn't ship them. Both
+are documented under :doc:`installation prerequisites
+<configuration>` below.
 
+.. _dasmos: https://github.com/acornaeology/dasmos
 .. _py8dis: https://github.com/acornaeology/py8dis
 .. _beebasm: https://github.com/stardot/beebasm
 
@@ -44,7 +62,12 @@ your project's ``pyproject.toml``:
    [project]
    dependencies = [
        "fantasm>=0.4.0",
-       "py8dis @ git+https://github.com/acornaeology/py8dis.git",
+       # Pick whichever disassembler your driver uses. dasmos is the
+       # current recommendation; py8dis still works for projects that
+       # haven't migrated yet.
+       "dasmos>=1.0",
+       # ...or, for a py8dis-based driver:
+       # "py8dis @ git+https://github.com/acornaeology/py8dis.git",
    ]
 
 After ``uv sync`` the ``fantasm`` console script is on ``PATH`` and
@@ -99,36 +122,33 @@ That creates ``versions/myrom-1.0/`` with three subdirectories:
 
    versions/myrom-1.0/
      rom/        # drop the original ROM bytes here as myrom-1.0.rom
-     disassemble/  # the py8dis driver script will live here
+     disassemble/  # the disassembly driver script will live here
      output/     # generated .asm and .json land here
 
 Drop the ROM file into ``rom/`` (the filename must match
 ``{prefix}-{version_id}.rom``).
 
 
-Writing a py8dis driver
------------------------
+Writing a disassembly driver
+----------------------------
 
-The driver is a Python script that calls into py8dis to declare the
-ROM's load address, entry points, labels, comments, subroutine
-boundaries, and any relocated code blocks. The conventional path is
+The driver is a Python script that calls into the disassembler
+library of your choice to declare the ROM's load address, entry
+points, labels, comments, subroutine boundaries, and any relocated
+code blocks. The conventional path is
 ``versions/{prefix}-{version_id}/disassemble/disasm_{prefix}_{version_id_no_dots}.py``;
-fantasm 0.4.0 looks here automatically.
+fantasm looks there automatically.
 
-A minimal driver:
+A minimal dasmos driver (the current recommendation):
 
 .. code-block:: python
 
-   """py8dis driver for myrom 1.0."""
+   """Disassembly driver for myrom 1.0."""
 
-   import json
    import os
-   import sys
    from pathlib import Path
 
-   from py8dis.commands import *
-
-   init(assembler_name="beebasm", lower_case=True)
+   import dasmos
 
    # `fantasm disassemble VID` sets these env vars; direct python
    # invocations fall back to the conventional layout.
@@ -143,21 +163,32 @@ A minimal driver:
        str(_version_dirpath / "output"),
    ))
 
-   load(0x8000, _rom_filepath, "6502")
+   d = dasmos.Disassembler.create(cpu="6502")
+   d.load(_rom_filepath, 0x8000)
+   d.entry(0x8000, name="reset")
 
    # ... declare entry points, labels, comments, subroutine() calls ...
 
-   output = go(print_output=False)
+   ir = d.disassemble()
    _output_dirpath.mkdir(parents=True, exist_ok=True)
-   (_output_dirpath / "myrom-1.0.asm").write_text(output)
+   (_output_dirpath / "myrom-1.0.asm").write_text(
+       str(ir.render("beebasm")), encoding="utf-8",
+   )
+   (_output_dirpath / "myrom-1.0.json").write_text(
+       str(ir.render("json")), encoding="utf-8",
+   )
 
-   structured = get_structured()
-   (_output_dirpath / "myrom-1.0.json").write_text(json.dumps(structured))
+The exact dasmos DSL is beyond the scope of fantasm's docs (see the
+`dasmos project <https://github.com/acornaeology/dasmos>`_ for the
+full driver-API reference), but the sibling repos linked from the
+front page have working drivers you can copy.
 
-The exact py8dis DSL is beyond the scope of fantasm's docs (see the
-`py8dis project <https://github.com/acornaeology/py8dis>`_ for that),
-but the sibling repos linked from the front page have working
-drivers you can copy.
+py8dis drivers also work — fantasm runs whichever driver script
+the version directory contains. The
+`py8dis project <https://github.com/acornaeology/py8dis>`_ has
+its own DSL reference; py8dis's ``scripts/py8dis2dasmos.py``
+porter (shipped with dasmos) translates a py8dis driver to the
+dasmos shape automatically when you're ready to migrate.
 
 
 Running the pipeline
@@ -167,7 +198,7 @@ With the driver in place:
 
 .. code-block:: bash
 
-   # 1. Run the py8dis driver to generate .asm and .json.
+   # 1. Run the disassembly driver to generate .asm and .json.
    uv run fantasm disassemble 1.0
 
    # 2. Validate every comment / label / subroutine address in the

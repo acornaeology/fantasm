@@ -403,7 +403,8 @@ def check_block_stale_addr(
 ) -> list[dict]:
     """``comments_before`` contains stale ``&XXXX`` addresses.
 
-    Excludes py8dis-generated reference lines and ``*****`` separators.
+    Excludes disassembler-generated reference lines and ``*****``
+    separators.
     Skips ``(item_addr, stale)`` pairs already in ``seen`` to avoid
     duplicating findings already produced for descriptions.
     """

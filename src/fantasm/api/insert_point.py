@@ -1,8 +1,10 @@
 """Compute insertion points for new ``subroutine()`` declarations.
 
-Parses a py8dis driver script to locate existing ``subroutine()``
-declarations, identifies the main address-ordered block, and computes
-where a new declaration for a given target address should be inserted.
+Parses a disassembly driver script (whether built on dasmos or
+py8dis — both expose a ``subroutine()`` API with the same call
+shape) to locate existing ``subroutine()`` declarations, identify
+the main address-ordered block, and compute where a new declaration
+for a given target address should be inserted.
 
 Sibling ``disasm_tools.insert_point`` was byte-identical across all
 four forks. The fantasm port lifts the pure-logic helpers
