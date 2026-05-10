@@ -31,15 +31,21 @@ def driver() -> None:
 @driver.command(
     "sort",
     help=(
-        "Sort top-level annotation calls (label, comment, "
-        "subroutine, banner, entry, byte, word, string, expr, "
-        "expr_label, rts_code_ptr) in DRIVER_FILEPATH by primary "
-        "address. Imports, Disassembler.create / load / add_move / "
-        "use_environment / hook_subroutine, and any call with a "
-        "non-literal first argument or inside an indented block "
-        "are anchors that stay where they are and divide the file "
-        "into independent sortable runs. Statement text is moved "
-        "byte-for-byte; hex literals are not normalised."
+        "Sort the statements in DRIVER_FILEPATH into the canonical "
+        "address order. Imports / Disassembler.create / d.load / "
+        "d.add_move are pinned to the top by Python execution "
+        "constraints; the render block (ir = d.disassemble() and "
+        "everything after it, including a contiguous import sys "
+        "directly above) is pinned to the bottom. Between them, "
+        "use_environment calls cluster ahead of the address-keyed "
+        "run; add_move floats to its dest range; hook_subroutine, "
+        "format_hint, constant, and the address-keyed annotations "
+        "(label / comment / subroutine / banner / entry / byte / "
+        "word / string / expr / expr_label / rts_code_ptr) all "
+        "sort by their literal first-arg address; for / if / while "
+        "blocks anchor at their first iteration's literal. "
+        "Statement text is moved byte-for-byte; hex literals are "
+        "not normalised."
     ),
 )
 @click.argument(

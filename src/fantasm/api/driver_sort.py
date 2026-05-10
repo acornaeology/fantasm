@@ -5,52 +5,86 @@ disassembler library through annotation calls — ``d.label(0x9000,
 "foo")``, ``d.comment(0xA000, "...")``, etc. As these files grow
 they tend to drift out of address order, so reading the file
 top-to-bottom doesn't follow the address space. This module
-rewrites the file text so that recognised top-level annotation
-calls within each independently sortable run are in address order.
+rewrites the file so the output is the unique address-ordered
+permutation that satisfies the script's real ordering constraints.
 
-Design contract: statement text is moved byte-for-byte. We never
-reformat anything — hex literals stay hex, multi-line calls keep
-their original line breaks and quoting, embedded comments and
-blank-line spacing are preserved verbatim. The sort is a pure
-permutation of statement texts. That is the property that makes a
-``fantasm verify`` byte-identity check viable as the safety net:
-if every annotation moves intact and the disassembler is
-order-independent for these annotation kinds, the rendered output
-is unchanged.
+The model is a partial-order topological sort. Each top-level
+statement is a node; ordering constraints (Python execution
+prerequisites, ``add_move`` translation requirements, the
+``disassemble`` → render edge) are explicit edges. Where topology
+leaves multiple statements free, the tie is broken by primary
+address. The result is a single canonical ordering with no
+per-anchor heuristics.
 
-Conservative classification:
+## Hard edges
 
-- A statement is **sortable** only when its first physical line
-  has zero leading whitespace AND its head is a recognised
-  annotation function (``label``, ``comment``, ``subroutine``,
-  ``banner``, ``entry``, ``byte``, ``word``, ``string``,
-  ``expr``, ``expr_label``, ``rts_code_ptr``) AND the first
-  positional argument is a literal integer (``0xNNNN``,
-  decimal, ``0o…``, ``0b…``).
-- Setup calls (``use_environment``, ``hook_subroutine``,
-  ``load``, ``add_move``) and ambiguous calls (``format_hint``,
-  ``constant``) are **anchors**: they stay in place. Anchors
-  divide the file into independent sortable runs, so we never
-  move an annotation across a setup boundary.
-- Anything else — imports, assignments, ``def``/``for``/``if``
-  blocks, indented lines, calls with non-literal first args,
-  the ``ir = d.disassemble()`` render coda — is also an anchor.
+- ``import`` / ``from`` / module-level assignments precede
+  ``d = … Disassembler.create(…)``.
+- ``d = … Disassembler.create(…)`` precedes every ``d.X(…)`` call.
+- ``d.load(…)`` precedes every other ``d.X(…)`` call.
+- ``d.add_move(dest, src, length)`` precedes every annotation
+  whose primary address falls inside ``[dest, dest+length)`` or
+  ``[src, src+length)``.
+- Every annotation, setup, env, hook, hint, constant, and
+  indented block precedes ``ir = d.disassemble()``.
+- ``ir = d.disassemble()`` precedes every subsequent statement
+  (renders, file IO, prints).
 
-The receiver is matched permissively: ``d.label(...)`` and bare
-``label(...)`` both classify the same way, so this module works
-for both dasmos drivers (``d.``-prefixed) and py8dis drivers
-(import-* style).
+## Tiebreak (sort key for free choices)
+
+- Setup (``import``, module assigns, ``Disassembler.create``,
+  ``d.load``): ``-inf`` — topology pins them to the top.
+- ``d.use_environment(…)``: ``-1`` — clusters ahead of the
+  address-keyed run.
+- ``d.add_move(dest, src, length)``: ``min(dest, src)``.
+- ``d.hook_subroutine(addr, …)`` / ``d.format_hint(addr, …)``:
+  ``addr``.
+- ``d.constant(value, name)`` with literal int value: ``value``.
+- ``d.label`` / ``comment`` / ``subroutine`` / ``banner`` /
+  ``entry`` / ``byte`` / ``word`` / ``string`` / ``expr`` /
+  ``expr_label`` / ``rts_code_ptr`` with literal first arg:
+  the literal value.
+- Indented block (``for`` / ``if`` / ``while`` / ``with`` /
+  ``def``) with a derivable first-iteration address: that
+  address.
+- Indented block or unrecognised top-level call with no
+  derivable address: a soft anchor — sort key inherited from
+  the nearest preceding addressable statement.
+- Render block (``ir = d.disassemble()`` and after): ``+inf``,
+  again topology-pinned.
+- Final tiebreak: original line number.
+
+Indented blocks move as one atomic unit (header + body together).
+The block's address is derived (in order of preference) from the
+first literal int in the loop iterable, then from the first
+literal-int positional arg of any sortable ``d.X(…)`` call in the
+body. If neither yields a literal, the block becomes a soft
+anchor — pinned to its source neighbourhood by edges to the
+immediately surrounding statements — and the rest of the file
+sorts around it.
+
+## Byte-identity contract
+
+Statement text is moved verbatim. We never re-emit numeric
+literals, never reformat keyword args, never normalise quoting.
+``ast.parse`` is used to *understand* structure; the original
+source-text bytes are sliced by line range and concatenated in
+the new order. Hex literals stay hex.
 """
 
 from __future__ import annotations
 
-import re
+import ast
+import heapq
+import math
 from collections.abc import Sequence
-from dataclasses import dataclass
-
-from .backfill import group_logical_statements
+from dataclasses import dataclass, field
 
 
+# Annotation calls that take an address as their first positional
+# argument and sort by that address. The receiver may be ``d.foo(…)``
+# or bare ``foo(…)``; both forms appear depending on whether the
+# driver is dasmos-style or py8dis-style.
 SORTABLE_FUNCTIONS: frozenset[str] = frozenset({
     "label",
     "comment",
@@ -63,62 +97,40 @@ SORTABLE_FUNCTIONS: frozenset[str] = frozenset({
     "expr",
     "expr_label",
     "rts_code_ptr",
-})
-
-
-# Setup / ambiguous calls are intentionally NOT sorted. ``use_environment``
-# and ``add_move`` must precede annotations on the regions they touch;
-# ``hook_subroutine`` registers parsers used while the disassembler walks
-# code; ``format_hint`` may be consumed during environment setup;
-# ``constant``'s first argument may be an address or a value and we
-# can't tell syntactically. Treating them as anchors leaves them where
-# the human author put them, which is the safest default.
-ANCHOR_FUNCTIONS: frozenset[str] = frozenset({
-    "load",
-    "add_move",
-    "use_environment",
     "hook_subroutine",
     "format_hint",
-    "constant",
 })
 
 
-# Match ``foo(`` or ``something.foo(`` at the start of a statement
-# (after concatenation of multi-line statement text). The receiver is
-# permissive because driver scripts use both ``d.foo(...)`` and bare
-# ``foo(...)`` styles depending on the disassembler library.
-_RE_CALL_HEAD = re.compile(
-    r"^\s*(?:[A-Za-z_][A-Za-z_0-9]*\s*\.\s*)?"
-    r"(?P<name>[A-Za-z_][A-Za-z_0-9]*)\s*\("
-)
+# Vestigial set kept for back-compat with 0.12.0 callers. The
+# topo-sort no longer uses a coarse "anchor" classification — every
+# statement gets per-kind handling — but consumers of the public
+# constant might still introspect it.
+ANCHOR_FUNCTIONS: frozenset[str] = frozenset({"add_move"})
 
-# A literal-int first positional argument terminated by ``,`` or ``)``.
-# ``int(value, 0)`` parses 0x / 0o / 0b / decimal — the same forms
-# Python's tokenizer accepts.
-_RE_FIRST_INT_ARG = re.compile(
-    r"\s*(?P<value>0x[0-9A-Fa-f]+|0o[0-7]+|0b[01]+|\d+)\s*[,)]"
-)
+
+# Setup-call names that must precede every other ``d.`` call.
+_SETUP_CALLS: frozenset[str] = frozenset({"load"})
+
+
+# Sentinel sort keys.
+_KEY_SETUP = -math.inf
+_KEY_USE_ENVIRONMENT = -1
+_KEY_RENDER = math.inf
 
 
 @dataclass(frozen=True)
 class Unit:
-    """One source-level unit: trailing-of-previous + leading + one statement.
+    """One source-level unit: leading filler + one statement + trailing filler.
 
-    Filler (blank or ``#``-comment lines) between two real statements
-    is split at the first non-blank line. The leading blank run goes
-    into the preceding statement's ``trailing_lines`` (so a blank
-    line "after" a statement stays after it across a sort). The rest
-    — comment lines and their interspersed spacing — goes into the
-    following statement's ``leading_lines`` (so ``# heading`` style
-    comments travel with the thing they describe).
-
-    ``statement_lines`` are the lines of one balanced-paren statement
-    (possibly multi-line). ``kind`` is ``"sortable"``, ``"anchor"``,
-    or ``"trailing_filler"`` (the last-only unit holding any
-    blank/comment lines after the file's final real statement). For
-    sortable units, ``address`` is the literal first-argument value.
-    ``original_index`` is the position in the original file (used as
-    a stable-sort tiebreaker).
+    ``leading_lines`` and ``trailing_lines`` are blank or comment-only
+    lines that travel with the statement when it moves. ``statement_lines``
+    are the lines of one top-level Python statement (possibly multi-line
+    or a whole indented block). ``kind`` describes the statement's
+    role for the sort. ``address`` is the unit's primary sort
+    address (``None`` for setup / render / soft-anchor units).
+    ``original_index`` is the unit's position in the original file
+    (stable-sort tiebreaker).
     """
 
     leading_lines: tuple[str, ...]
@@ -129,43 +141,324 @@ class Unit:
     original_index: int
 
 
-def _is_filler_line(line: str) -> bool:
-    """Return True for a blank line or a line that is only a ``#`` comment."""
-    stripped = line.strip()
-    return stripped == "" or stripped.startswith("#")
+@dataclass
+class _Statement:
+    """Internal: a classified top-level statement plus filler attachments."""
+
+    kind: str
+    sort_key: float
+    address: int | None
+    addr_ranges: tuple[tuple[int, int], ...]
+    original_index: int
+    leading_lines: list[str] = field(default_factory=list)
+    statement_lines: list[str] = field(default_factory=list)
+    trailing_lines: list[str] = field(default_factory=list)
+
+    def to_unit(self) -> Unit:
+        return Unit(
+            leading_lines=tuple(self.leading_lines),
+            statement_lines=tuple(self.statement_lines),
+            trailing_lines=tuple(self.trailing_lines),
+            kind=self.kind,
+            address=self.address,
+            original_index=self.original_index,
+        )
 
 
-def _classify_statement(stmt_lines: Sequence[str]) -> tuple[str, int | None]:
-    """Classify a logical statement.
+# --- AST classification -------------------------------------------
 
-    Returns ``("sortable", address)`` or ``("anchor", None)``. Indented
-    statements (loop bodies, ``def`` bodies, etc.) are always anchors
-    since their position is constrained by the enclosing block.
+
+def _call_name(node: ast.AST) -> str | None:
+    """Return the function name of a call, stripping any single-level receiver.
+
+    ``foo(…)`` → ``"foo"``; ``d.foo(…)`` → ``"foo"``;
+    ``d.disassembler.foo(…)`` → ``"foo"``. Anything more exotic
+    (call expressions as the callee) returns ``None``.
     """
-    if not stmt_lines:
-        return "anchor", None
-    first = stmt_lines[0]
-    if first[:1] in (" ", "\t"):
-        return "anchor", None
+    if isinstance(node, ast.Call):
+        callee = node.func
+        if isinstance(callee, ast.Name):
+            return callee.id
+        if isinstance(callee, ast.Attribute):
+            return callee.attr
+    return None
 
-    # Concatenate so a literal first arg laid out across multiple
-    # physical lines is still found. Newlines become spaces — fine
-    # for matching ``\s``.
-    full = " ".join(stmt_lines)
-    head = _RE_CALL_HEAD.match(full)
-    if head is None:
-        return "anchor", None
-    name = head.group("name")
-    if name in ANCHOR_FUNCTIONS:
-        return "anchor", None
-    if name not in SORTABLE_FUNCTIONS:
-        return "anchor", None
 
-    rest = full[head.end():]
-    arg_match = _RE_FIRST_INT_ARG.match(rest)
-    if arg_match is None:
-        return "anchor", None
-    return "sortable", int(arg_match.group("value"), 0)
+def _literal_int(node: ast.AST) -> int | None:
+    """Return the integer value of ``node`` if it's a literal int (incl. ``-N``)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(
+        node, ast.UnaryOp
+    ) and isinstance(node.op, ast.USub):
+        inner = _literal_int(node.operand)
+        if inner is not None:
+            return -inner
+    return None
+
+
+def _first_literal_in_expr(node: ast.AST) -> int | None:
+    """Find the first literal-int in a (possibly compound) expression.
+
+    Handles ``0x1234``, ``-1``, ``0x1234 + i``, lists / tuples
+    (``[0x100, 0x200]``), and ``range(START, STOP)``-style calls
+    where the first arg is a literal int. Returns ``None`` when no
+    literal can be recovered.
+    """
+    direct = _literal_int(node)
+    if direct is not None:
+        return direct
+    if isinstance(node, ast.BinOp):
+        left = _first_literal_in_expr(node.left)
+        if left is not None:
+            return left
+        return _first_literal_in_expr(node.right)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        for elt in node.elts:
+            lit = _first_literal_in_expr(elt)
+            if lit is not None:
+                return lit
+        return None
+    if isinstance(node, ast.Call):
+        # ``range(START, STOP)`` and ``range(START, STOP, STEP)`` —
+        # the first arg is a real start address. ``range(N)`` is a
+        # count, not an address; skip it. We don't peek into other
+        # calls — they could be e.g. ``enumerate(table)`` or
+        # ``len(x)`` whose literal args aren't addresses.
+        callee = node.func
+        if (
+            isinstance(callee, ast.Name)
+            and callee.id == "range"
+            and len(node.args) >= 2
+        ):
+            return _first_literal_in_expr(node.args[0])
+        return None
+    return None
+
+
+def _first_literal_arg(call_node: ast.Call) -> int | None:
+    """First positional arg of ``call_node`` if it's a literal int."""
+    if not call_node.args:
+        return None
+    return _first_literal_in_expr(call_node.args[0])
+
+
+def _all_literal_args(call_node: ast.Call, count: int) -> tuple[int, ...] | None:
+    """First ``count`` positional args, all literal ints; else ``None``."""
+    if len(call_node.args) < count:
+        return None
+    values = []
+    for arg in call_node.args[:count]:
+        v = _literal_int(arg)
+        if v is None:
+            return None
+        values.append(v)
+    return tuple(values)
+
+
+def _block_first_address(block: ast.AST) -> int | None:
+    """Derive a sort address for an indented block.
+
+    Order of preference:
+
+    1. First literal int in the loop iterable (``for addr in [0x055B, …]``,
+       ``for addr in range(0x8015, 0x801D)``).
+    2. First literal-int positional arg of any sortable ``d.X(…)`` call
+       in the block body, walked recursively.
+
+    Returns ``None`` when no literal can be recovered (the block
+    will become a soft anchor).
+    """
+    if isinstance(block, ast.For):
+        addr = _first_literal_in_expr(block.iter)
+        if addr is not None:
+            return addr
+    # Walk the body for the first sortable d.X(literal, …) call.
+    body_nodes: list[ast.AST] = []
+    for attr in ("body", "orelse", "finalbody", "handlers"):
+        body_nodes.extend(getattr(block, attr, []) or [])
+    for node in ast.walk(block):
+        if isinstance(node, ast.Call):
+            name = _call_name(node)
+            if name in SORTABLE_FUNCTIONS or name == "constant":
+                lit = _first_literal_arg(node)
+                if lit is not None:
+                    return lit
+    return None
+
+
+def _is_render_start(node: ast.AST) -> bool:
+    """True for ``ir = d.disassemble()`` (or any ``X = …disassemble(…)``)."""
+    if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        return False
+    value = getattr(node, "value", None)
+    return isinstance(value, ast.Call) and _call_name(value) == "disassemble"
+
+
+def _classify_pre_render(
+    node: ast.AST, original_index: int
+) -> _Statement:
+    """Classify a statement appearing before ``ir = d.disassemble()``."""
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return _Statement(
+            kind="setup_import",
+            sort_key=_KEY_SETUP,
+            address=None,
+            addr_ranges=(),
+            original_index=original_index,
+        )
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        return _Statement(
+            kind="setup_assign",
+            sort_key=_KEY_SETUP,
+            address=None,
+            addr_ranges=(),
+            original_index=original_index,
+        )
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        call = node.value
+        name = _call_name(call)
+        if name == "create":  # Disassembler.create(...)
+            return _Statement(
+                kind="setup_create",
+                sort_key=_KEY_SETUP,
+                address=None,
+                addr_ranges=(),
+                original_index=original_index,
+            )
+        if name in _SETUP_CALLS:  # d.load
+            return _Statement(
+                kind=f"setup_{name}",
+                sort_key=_KEY_SETUP,
+                address=None,
+                addr_ranges=(),
+                original_index=original_index,
+            )
+        if name == "use_environment":
+            return _Statement(
+                kind="use_environment",
+                sort_key=_KEY_USE_ENVIRONMENT,
+                address=None,
+                addr_ranges=(),
+                original_index=original_index,
+            )
+        if name == "add_move":
+            triple = _all_literal_args(call, 3)
+            if triple is not None:
+                dest, src, length = triple
+                return _Statement(
+                    kind="add_move",
+                    sort_key=float(min(dest, src)),
+                    address=min(dest, src),
+                    addr_ranges=(
+                        (dest, dest + length),
+                        (src, src + length),
+                    ),
+                    original_index=original_index,
+                )
+            return _Statement(
+                kind="soft_anchor",
+                sort_key=math.nan,
+                address=None,
+                addr_ranges=(),
+                original_index=original_index,
+            )
+        if name == "constant":
+            value = _first_literal_arg(call)
+            if value is not None:
+                return _Statement(
+                    kind="constant",
+                    sort_key=float(value),
+                    address=value,
+                    addr_ranges=(),
+                    original_index=original_index,
+                )
+            return _Statement(
+                kind="soft_anchor",
+                sort_key=math.nan,
+                address=None,
+                addr_ranges=(),
+                original_index=original_index,
+            )
+        if name in SORTABLE_FUNCTIONS:
+            addr = _first_literal_arg(call)
+            if addr is not None:
+                return _Statement(
+                    kind="annotation",
+                    sort_key=float(addr),
+                    address=addr,
+                    addr_ranges=(),
+                    original_index=original_index,
+                )
+        return _Statement(
+            kind="soft_anchor",
+            sort_key=math.nan,
+            address=None,
+            addr_ranges=(),
+            original_index=original_index,
+        )
+    if isinstance(node, (ast.For, ast.While, ast.If, ast.With, ast.AsyncWith,
+                          ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                          ast.Try)):
+        addr = _block_first_address(node)
+        if addr is not None:
+            return _Statement(
+                kind="indented_block",
+                sort_key=float(addr),
+                address=addr,
+                addr_ranges=(),
+                original_index=original_index,
+            )
+        return _Statement(
+            kind="soft_anchor",
+            sort_key=math.nan,
+            address=None,
+            addr_ranges=(),
+            original_index=original_index,
+        )
+    return _Statement(
+        kind="soft_anchor",
+        sort_key=math.nan,
+        address=None,
+        addr_ranges=(),
+        original_index=original_index,
+    )
+
+
+def _resolve_soft_anchor_keys(statements: list[_Statement]) -> None:
+    """In-place: assign each pre-render soft anchor a sort key.
+
+    Each soft anchor inherits the sort key of the nearest preceding
+    *addressable* statement (use_environment, add_move, constant,
+    annotation, indented_block — anything but setup_*, render_*,
+    or another soft anchor). Setup statements never propagate
+    their ``-inf`` key forward, so a for-loop sitting right after
+    a big ``_table = [...]`` setup assignment doesn't get pulled
+    up into the setup region — it lands at the address of
+    whichever annotation last appeared in source before it.
+
+    If a soft anchor has no addressable predecessor (e.g. one
+    placed before any annotation), it inherits ``_KEY_USE_ENVIRONMENT``,
+    which sandwiches it between setup and the address-keyed run.
+    """
+    last_addressable_key: float = _KEY_USE_ENVIRONMENT
+    for s in statements:
+        if s.kind in ("render_start", "render_prelude", "render_tail"):
+            continue
+        if s.kind == "soft_anchor":
+            s.sort_key = last_addressable_key
+            continue
+        if s.kind.startswith("setup_"):
+            continue
+        if not math.isnan(s.sort_key):
+            last_addressable_key = s.sort_key
+
+
+# --- Filler attachment ---------------------------------------------
+
+
+def _is_blank(line: str) -> bool:
+    return line.strip() == ""
 
 
 def _split_filler(filler: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -178,132 +471,241 @@ def _split_filler(filler: Sequence[str]) -> tuple[list[str], list[str]]:
     """
     split_at = 0
     for i, line in enumerate(filler):
-        if line.strip() != "":
+        if not _is_blank(line):
             split_at = i
             break
     else:
-        # All lines blank: there's no comment to attach forward, so
-        # everything is trailing of the previous statement.
         return list(filler), []
     return list(filler[:split_at]), list(filler[split_at:])
 
 
-def build_units(text: str) -> list[Unit]:
-    """Parse ``text`` into a list of :class:`Unit` records.
+# --- Parse + classify ----------------------------------------------
 
-    Filler blocks between statements are split: leading blanks
-    attach as ``trailing_lines`` of the preceding statement;
-    comment lines (and their spacing) attach as ``leading_lines``
-    of the following statement. Filler at the start of the file
-    becomes leading of the first statement; filler after the last
-    real statement attaches as ``trailing_lines`` of that
-    statement (so the spacing pattern follows it across a sort).
 
-    The file's EOF newline is normalised away here and re-added
-    in :func:`emit_units`, so it never participates in the
-    blank-line-attachment logic.
+def _parse_statements(text: str) -> list[_Statement]:
+    """Parse ``text`` and return classified statements with attached filler.
+
+    The returned list is in **original source order**. Each
+    statement carries its own source lines plus the leading and
+    trailing filler that should travel with it across a sort. The
+    render boundary (``ir = d.disassemble()``) is detected first;
+    everything from there onwards is classified as ``render_start``
+    or ``render_tail`` regardless of construct (a stray
+    ``import sys`` placed just before the render block becomes
+    ``render_tail``, not ``setup_import``).
     """
-    if text == "":
+    body_text = text[:-1] if text.endswith("\n") else text
+    if body_text == "":
         return []
-    body = text[:-1] if text.endswith("\n") else text
-    lines = body.split("\n")
-    groups = group_logical_statements(lines)
+    lines = body_text.split("\n")
+    module = ast.parse(text)
 
-    pending_filler: list[str] = []
-    units: list[Unit] = []
-    for _start, _end, group_lines in groups:
-        if all(_is_filler_line(ln) for ln in group_lines):
-            pending_filler.extend(group_lines)
-            continue
+    # First pass: locate the render-start node, if any.
+    render_start_index: int | None = None
+    for index, node in enumerate(module.body):
+        if _is_render_start(node):
+            render_start_index = index
+            break
 
-        if units:
-            trailing_for_prev, leading_for_next = _split_filler(pending_filler)
+    statements: list[_Statement] = []
+    last_consumed_lineno = 0  # 1-based; lines 1..last_consumed_lineno are taken
+
+    for index, node in enumerate(module.body):
+        start_lineno = node.lineno  # 1-based, inclusive
+        end_lineno = node.end_lineno or start_lineno  # 1-based, inclusive
+
+        filler_above_lines = lines[last_consumed_lineno:start_lineno - 1]
+
+        if statements:
+            trailing_for_prev, leading_for_next = _split_filler(filler_above_lines)
+            statements[-1].trailing_lines.extend(trailing_for_prev)
         else:
-            # No previous statement to attach trailing to; everything
-            # in pending_filler is leading of this first statement.
-            trailing_for_prev, leading_for_next = [], list(pending_filler)
+            leading_for_next = list(filler_above_lines)
 
-        if trailing_for_prev and units:
-            prev = units[-1]
-            units[-1] = Unit(
-                leading_lines=prev.leading_lines,
-                statement_lines=prev.statement_lines,
-                trailing_lines=prev.trailing_lines + tuple(trailing_for_prev),
-                kind=prev.kind,
-                address=prev.address,
-                original_index=prev.original_index,
+        if render_start_index is not None and index == render_start_index:
+            stmt = _Statement(
+                kind="render_start",
+                sort_key=_KEY_RENDER,
+                address=None,
+                addr_ranges=(),
+                original_index=index,
             )
-
-        kind, address = _classify_statement(group_lines)
-        units.append(
-            Unit(
-                leading_lines=tuple(leading_for_next),
-                statement_lines=tuple(group_lines),
-                trailing_lines=(),
-                kind=kind,
-                address=address,
-                original_index=len(units),
-            )
-        )
-        pending_filler = []
-
-    if pending_filler:
-        if units:
-            # Attach to the last real statement so its trailing
-            # spacing follows it across a sort.
-            prev = units[-1]
-            units[-1] = Unit(
-                leading_lines=prev.leading_lines,
-                statement_lines=prev.statement_lines,
-                trailing_lines=prev.trailing_lines + tuple(pending_filler),
-                kind=prev.kind,
-                address=prev.address,
-                original_index=prev.original_index,
+        elif render_start_index is not None and index > render_start_index:
+            stmt = _Statement(
+                kind="render_tail",
+                sort_key=_KEY_RENDER,
+                address=None,
+                addr_ranges=(),
+                original_index=index,
             )
         else:
-            # File contains nothing but filler.
-            units.append(
-                Unit(
-                    leading_lines=(),
-                    statement_lines=tuple(pending_filler),
-                    trailing_lines=(),
-                    kind="trailing_filler",
-                    address=None,
-                    original_index=0,
-                )
-            )
-    return units
+            stmt = _classify_pre_render(node, original_index=index)
+
+        stmt.leading_lines = leading_for_next
+        stmt.statement_lines = lines[start_lineno - 1:end_lineno]
+        statements.append(stmt)
+        last_consumed_lineno = end_lineno
+
+    # Tail filler after the last statement.
+    tail_filler = lines[last_consumed_lineno:]
+    if tail_filler and statements:
+        statements[-1].trailing_lines.extend(tail_filler)
+
+    # Second pass: extend the render coda upward through any
+    # contiguous setup-shaped statements directly preceding
+    # ``ir = d.disassemble()``. The convention in dasmos drivers
+    # is ``import sys\nir = d.disassemble()\n…sys.stderr…`` —
+    # the ``import sys`` belongs with the render block, not with
+    # the file's header imports. Stop walking back the moment we
+    # see something non-setup (an annotation, a use_environment,
+    # an indented block, etc.).
+    if render_start_index is not None:
+        for i in range(render_start_index - 1, -1, -1):
+            if statements[i].kind.startswith("setup_"):
+                statements[i].kind = "render_prelude"
+                statements[i].sort_key = _KEY_RENDER
+            else:
+                break
+
+    _resolve_soft_anchor_keys(statements)
+    return statements
 
 
-def _sort_runs(units: Sequence[Unit]) -> list[Unit]:
-    """Stable-sort each run of consecutive ``sortable`` units by address.
+# --- Topological sort with address tiebreak -----------------------
 
-    Anchors and trailing filler are passed through unchanged. Each
-    sortable run is sorted independently; runs are bounded by the
-    surrounding anchors so a sortable annotation never crosses a
-    setup-call boundary.
+
+def _build_graph(
+    statements: Sequence[_Statement],
+) -> tuple[dict[int, set[int]], dict[int, int]]:
+    """Build the dependency DAG.
+
+    Returns ``(successors, in_degree)``. ``successors[i]`` is the set
+    of statement indices that ``statements[i]`` must precede.
+
+    Edge sources:
+
+    1. Each ``setup_*`` statement precedes every pre-render
+       non-setup statement (and ``render_start``).
+    2. Each ``add_move`` precedes every pre-render annotation
+       whose address falls inside either its dest range or its
+       src range.
+    3. Every pre-render non-render statement precedes
+       ``render_start``.
+    4. ``render_start`` precedes every ``render_tail`` statement.
+
+    Soft anchors are handled purely via their inherited sort_key
+    (see :func:`_resolve_soft_anchor_keys`); they don't add any
+    edges, so they can never participate in a cycle.
     """
-    result: list[Unit] = []
-    i = 0
-    n = len(units)
-    while i < n:
-        if units[i].kind != "sortable":
-            result.append(units[i])
-            i += 1
+    n = len(statements)
+    successors: dict[int, set[int]] = {i: set() for i in range(n)}
+    in_degree: dict[int, int] = {i: 0 for i in range(n)}
+
+    setup_indices = [
+        i for i, s in enumerate(statements) if s.kind.startswith("setup_")
+    ]
+    render_start_idx: int | None = next(
+        (i for i, s in enumerate(statements) if s.kind == "render_start"),
+        None,
+    )
+    render_prelude_indices = [
+        i for i, s in enumerate(statements) if s.kind == "render_prelude"
+    ]
+    render_tail_indices = [
+        i for i, s in enumerate(statements) if s.kind == "render_tail"
+    ]
+    pre_render_non_setup_indices = [
+        i
+        for i, s in enumerate(statements)
+        if not s.kind.startswith("setup_")
+        and s.kind not in ("render_start", "render_prelude", "render_tail")
+    ]
+
+    def add_edge(u: int, v: int) -> None:
+        if u == v:
+            return
+        if v not in successors[u]:
+            successors[u].add(v)
+            in_degree[v] += 1
+
+    # 1. Setup → pre-render-non-setup, render_prelude, and render_start.
+    for u in setup_indices:
+        for v in pre_render_non_setup_indices:
+            add_edge(u, v)
+        for v in render_prelude_indices:
+            add_edge(u, v)
+        if render_start_idx is not None:
+            add_edge(u, render_start_idx)
+
+    # 2. add_move → matching annotations.
+    for u in range(n):
+        s = statements[u]
+        if s.kind != "add_move":
             continue
-        j = i
-        while j < n and units[j].kind == "sortable":
-            j += 1
-        run = list(units[i:j])
-        # ``sorted`` is stable, so the original_index tiebreaker is
-        # belt-and-braces — but explicit is good when address aliases
-        # are common (banner + label + comment all at the same addr).
-        run.sort(
-            key=lambda u: (u.address if u.address is not None else 0, u.original_index)
-        )
-        result.extend(run)
-        i = j
-    return result
+        for v in pre_render_non_setup_indices:
+            t = statements[v]
+            if t.address is None:
+                continue
+            if any(lo <= t.address < hi for lo, hi in s.addr_ranges):
+                add_edge(u, v)
+
+    # 3. Every pre-render non-render → render_start; and every
+    # render_prelude → render_start.
+    if render_start_idx is not None:
+        for u in pre_render_non_setup_indices:
+            add_edge(u, render_start_idx)
+        for u in render_prelude_indices:
+            add_edge(u, render_start_idx)
+
+    # 4. render_start → render_tail.
+    if render_start_idx is not None:
+        for v in render_tail_indices:
+            add_edge(render_start_idx, v)
+
+    return successors, in_degree
+
+
+def _topo_sort(
+    statements: Sequence[_Statement],
+) -> list[_Statement]:
+    """Kahn's algorithm with address-keyed priority queue."""
+    successors, in_degree = _build_graph(statements)
+
+    def key_for(idx: int) -> tuple[float, int, int]:
+        s = statements[idx]
+        return (s.sort_key, s.original_index, idx)
+
+    heap: list[tuple[float, int, int]] = []
+    for i in range(len(statements)):
+        if in_degree[i] == 0:
+            heapq.heappush(heap, key_for(i))
+
+    out: list[_Statement] = []
+    while heap:
+        _, _, idx = heapq.heappop(heap)
+        out.append(statements[idx])
+        for v in successors[idx]:
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                heapq.heappush(heap, key_for(v))
+
+    if len(out) != len(statements):
+        # Should not happen — the graph we build is acyclic by
+        # construction. Defensive fallback: append remaining items
+        # in original order.
+        seen = {id(s) for s in out}
+        for s in statements:
+            if id(s) not in seen:
+                out.append(s)
+    return out
+
+
+# --- Public API ---------------------------------------------------
+
+
+def build_units(text: str) -> list[Unit]:
+    """Parse ``text`` into a list of :class:`Unit` records, in source order."""
+    return [s.to_unit() for s in _parse_statements(text)]
 
 
 def emit_units(units: Sequence[Unit]) -> str:
@@ -317,46 +719,36 @@ def emit_units(units: Sequence[Unit]) -> str:
 
 
 def sort_driver_text(text: str) -> str:
-    """Return ``text`` with sortable annotation calls reordered by address.
+    """Return ``text`` with statements topologically sorted by address.
 
-    The transformation is a permutation of whole statement texts —
-    no reformatting, no rewriting of arguments, no change to the
-    spelling of integer literals. See the module docstring for the
-    classification rules.
+    See the module docstring for the full rule set. Statement text
+    is moved verbatim — hex literals stay hex, multi-line calls
+    keep their original layout.
     """
     if text == "":
         return text
-    units = build_units(text)
-    out = emit_units(_sort_runs(units))
-    # build_units strips one trailing \n into the EOF marker; re-add
-    # it unconditionally if the source had one, so the emitted text
-    # always closes with the original file's trailing newline.
+    statements = _parse_statements(text)
+    sorted_statements = _topo_sort(statements)
+    out = emit_units([s.to_unit() for s in sorted_statements])
     if text.endswith("\n"):
         out += "\n"
     return out
 
 
 def is_sorted(text: str) -> bool:
-    """Return True if every sortable run is already in non-decreasing address order.
+    """Return True if ``text`` is already in canonical sorted order.
 
-    Useful for ``--check`` modes: a true result means the sort is a
-    no-op and ``sort_driver_text(text) == text``.
+    Equivalent to ``sort_driver_text(text) == text`` but slightly
+    cheaper (skips the emit pass when the topology already
+    matches).
     """
-    units = build_units(text)
-    i = 0
-    n = len(units)
-    while i < n:
-        if units[i].kind != "sortable":
-            i += 1
-            continue
-        prev_addr = -1
-        while i < n and units[i].kind == "sortable":
-            assert units[i].address is not None
-            if units[i].address < prev_addr:
-                return False
-            prev_addr = units[i].address
-            i += 1
-    return True
+    if text == "":
+        return True
+    statements = _parse_statements(text)
+    sorted_statements = _topo_sort(statements)
+    return [s.original_index for s in sorted_statements] == list(
+        range(len(statements))
+    )
 
 
 __all__ = [
