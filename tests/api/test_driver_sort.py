@@ -299,6 +299,71 @@ class TestCanonicalOrdering:
         assert lines[2] == "    d.byte(0x9286 + i)"
         assert lines[3] == 'd.label(0xA000, "after")'
 
+    def test_loop_over_module_level_table_of_tuples_anchors_at_first_addr(
+        self,
+    ) -> None:
+        # Issue #14 reproducer pattern: a for-loop iterates over a
+        # module-level list of (addr, label, desc) tuples, with the
+        # body emitting d.word(addr) on the iter var. Sort must
+        # follow the Name back to the literal list and recover the
+        # covered addresses (0x0500, 0x0502, …, 0x0516 here).
+        text = (
+            "_table = [(0x0500, 'x'), (0x0510, 'y')]\n"
+            'd.label(0x9000, "after_table_run")\n'
+            "for addr, label in _table:\n"
+            "    d.word(addr)\n"
+            'd.label(0x0400, "before_table_run")\n'
+        )
+        result = sort_driver_text(text)
+        lines = [ln for ln in result.splitlines() if ln.strip()]
+        # 0x0400 before, then the loop (covers 0x0500..0x0510),
+        # then 0x9000.
+        assert lines[0] == "_table = [(0x0500, 'x'), (0x0510, 'y')]"
+        assert lines[1] == 'd.label(0x0400, "before_table_run")'
+        assert lines[2] == "for addr, label in _table:"
+        assert lines[3] == "    d.word(addr)"
+        assert lines[4] == 'd.label(0x9000, "after_table_run")'
+
+    def test_loop_must_follow_add_move_covering_loop_addresses(self) -> None:
+        # Direct issue #14 case: ``add_move`` mapping bytes into
+        # 0x0500-0x0600, and a for-loop emitting d.word at literal
+        # 0x0500-0x0510. The loop MUST sort after the move, so the
+        # move's translation table is registered before the
+        # annotations attach.
+        text = (
+            "_table = [(0x0500, 'x'), (0x0510, 'y')]\n"
+            "for addr, label in _table:\n"
+            "    d.word(addr)\n"
+            "d.add_move(0x0500, 0xBC90, 0x100)\n"
+        )
+        result = sort_driver_text(text)
+        lines = [ln for ln in result.splitlines() if ln.strip()]
+        # add_move first, then the loop, with the table at the top.
+        idx_table = result.index("_table = ")
+        idx_move = result.index("d.add_move(")
+        idx_for = result.index("for addr, label")
+        assert idx_table < idx_move < idx_for
+
+    def test_loop_with_unknown_coverage_pinned_after_every_add_move(
+        self,
+    ) -> None:
+        # Conservative over-constrain rule: if we can't fully
+        # determine the loop's covered addresses, every add_move
+        # must precede it. Here the iterable is a function call we
+        # don't recognise, so coverage is unknown.
+        text = (
+            "d.add_move(0x0500, 0xBC90, 0x100)\n"
+            "d.add_move(0x0600, 0xBD90, 0x100)\n"
+            "for x in load_table():\n"
+            "    d.byte(x)\n"
+        )
+        result = sort_driver_text(text)
+        idx_move_1 = result.index("d.add_move(0x0500")
+        idx_move_2 = result.index("d.add_move(0x0600")
+        idx_for = result.index("for x in load_table")
+        assert idx_move_1 < idx_for
+        assert idx_move_2 < idx_for
+
     def test_loop_with_no_recoverable_address_inherits_from_predecessor(
         self,
     ) -> None:

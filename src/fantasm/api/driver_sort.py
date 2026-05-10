@@ -150,6 +150,13 @@ class _Statement:
     address: int | None
     addr_ranges: tuple[tuple[int, int], ...]
     original_index: int
+    # ``coverage_known`` is False when an ``indented_block`` couldn't
+    # resolve every address its body emits at — typically because the
+    # loop iterable resolves to a non-literal expression. Such blocks
+    # over-constrain: every ``add_move`` adds a precedence edge, so
+    # the block can never sort earlier than any move whose range
+    # *might* overlap. Ignored for non-block kinds.
+    coverage_known: bool = True
     leading_lines: list[str] = field(default_factory=list)
     statement_lines: list[str] = field(default_factory=list)
     trailing_lines: list[str] = field(default_factory=list)
@@ -256,35 +263,134 @@ def _all_literal_args(call_node: ast.Call, count: int) -> tuple[int, ...] | None
     return tuple(values)
 
 
-def _block_first_address(block: ast.AST) -> int | None:
-    """Derive a sort address for an indented block.
+def _collect_module_assigns(module: ast.Module) -> dict[str, ast.AST]:
+    """Build a ``{name: value_node}`` map from top-level assignments.
 
-    Order of preference:
+    Drivers commonly hoist large dispatch tables to module scope —
+    ``_tube_r2_entries = [(0x0500, …), (0x0502, …), …]`` — and then
+    ``for`` over them. To know what addresses the loop covers we have
+    to follow the Name back to its bound value. Only top-level
+    ``Assign``/``AnnAssign`` are tracked; nested or conditional
+    bindings are out of scope.
+    """
+    assigns: dict[str, ast.AST] = {}
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigns[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                assigns[node.target.id] = node.value
+    return assigns
 
-    1. First literal int in the loop iterable (``for addr in [0x055B, …]``,
-       ``for addr in range(0x8015, 0x801D)``).
-    2. First literal-int positional arg of any sortable ``d.X(…)`` call
-       in the block body, walked recursively.
 
-    Returns ``None`` when no literal can be recovered (the block
-    will become a soft anchor).
+def _extract_addresses_from_iterable(
+    iterable: ast.AST,
+    assigns: dict[str, ast.AST],
+    _visited: frozenset[int] | None = None,
+) -> tuple[set[int], bool]:
+    """Return ``(addresses, complete)`` derivable from a loop iterable.
+
+    - List / tuple of literal ints: the literals.
+    - List / tuple of tuples-or-lists: first literal int of each
+      element (the conventional ``(addr, label, …)`` shape).
+    - ``range(start, stop)`` / ``range(start, stop, step)`` with
+      literal arguments: the inclusive start, exclusive stop integers.
+    - ``Name`` bound at module level: recurse into the bound value.
+    - Anything else (computed expressions, function calls other than
+      ``range``): empty set, ``complete=False``.
+
+    ``complete`` reports whether every iteration value was statically
+    derivable. False forces the conservative add_move-edges-from-all
+    rule so the block can't sort earlier than any move that *might*
+    cover its range.
+    """
+    visited = _visited or frozenset()
+
+    if isinstance(iterable, (ast.List, ast.Tuple, ast.Set)):
+        addrs: set[int] = set()
+        complete = True
+        for elt in iterable.elts:
+            if isinstance(elt, (ast.List, ast.Tuple)):
+                if elt.elts:
+                    lit = _literal_int(elt.elts[0])
+                    if lit is not None:
+                        addrs.add(lit)
+                        continue
+                complete = False
+            else:
+                lit = _literal_int(elt)
+                if lit is not None:
+                    addrs.add(lit)
+                    continue
+                complete = False
+        return addrs, complete
+
+    if isinstance(iterable, ast.Call):
+        callee = iterable.func
+        if (
+            isinstance(callee, ast.Name)
+            and callee.id == "range"
+            and 2 <= len(iterable.args) <= 3
+        ):
+            start = _literal_int(iterable.args[0])
+            stop = _literal_int(iterable.args[1])
+            step = (
+                _literal_int(iterable.args[2])
+                if len(iterable.args) == 3
+                else 1
+            )
+            if start is not None and stop is not None and step:
+                return set(range(start, stop, step)), True
+        return set(), False
+
+    if isinstance(iterable, ast.Name):
+        if iterable.id in visited:
+            return set(), False
+        target = assigns.get(iterable.id)
+        if target is not None:
+            return _extract_addresses_from_iterable(
+                target, assigns, visited | {iterable.id}
+            )
+        return set(), False
+
+    return set(), False
+
+
+def _block_coverage(
+    block: ast.AST, assigns: dict[str, ast.AST]
+) -> tuple[int | None, tuple[tuple[int, int], ...], bool]:
+    """Derive an indented block's address coverage.
+
+    Returns ``(primary_address, addr_ranges, coverage_known)``:
+
+    - ``primary_address`` — the smallest covered address, used as
+      the sort key. ``None`` if no address could be derived (caller
+      promotes to ``soft_anchor``).
+    - ``addr_ranges`` — a single ``(min, max+1)`` range if known
+      addresses are contiguous-ish (we use min..max+1 for overlap
+      tests; the inner gaps don't matter because ``add_move`` ranges
+      are themselves contiguous).
+    - ``coverage_known`` — whether the block's full address set was
+      derivable. ``False`` triggers conservative ``add_move`` edges.
     """
     if isinstance(block, ast.For):
-        addr = _first_literal_in_expr(block.iter)
-        if addr is not None:
-            return addr
-    # Walk the body for the first sortable d.X(literal, …) call.
-    body_nodes: list[ast.AST] = []
-    for attr in ("body", "orelse", "finalbody", "handlers"):
-        body_nodes.extend(getattr(block, attr, []) or [])
+        addrs, complete = _extract_addresses_from_iterable(block.iter, assigns)
+        if addrs:
+            ranges = ((min(addrs), max(addrs) + 1),)
+            return min(addrs), ranges, complete
+    # Fallback: scan the body for a literal-int first arg of any
+    # sortable ``d.X(…)`` call. We only know one address from this
+    # path, so coverage is incomplete.
     for node in ast.walk(block):
         if isinstance(node, ast.Call):
             name = _call_name(node)
             if name in SORTABLE_FUNCTIONS or name == "constant":
                 lit = _first_literal_arg(node)
                 if lit is not None:
-                    return lit
-    return None
+                    return lit, ((lit, lit + 1),), False
+    return None, (), False
 
 
 def _is_render_start(node: ast.AST) -> bool:
@@ -296,7 +402,9 @@ def _is_render_start(node: ast.AST) -> bool:
 
 
 def _classify_pre_render(
-    node: ast.AST, original_index: int
+    node: ast.AST,
+    original_index: int,
+    assigns: dict[str, ast.AST],
 ) -> _Statement:
     """Classify a statement appearing before ``ir = d.disassemble()``."""
     if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -400,14 +508,15 @@ def _classify_pre_render(
     if isinstance(node, (ast.For, ast.While, ast.If, ast.With, ast.AsyncWith,
                           ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
                           ast.Try)):
-        addr = _block_first_address(node)
-        if addr is not None:
+        primary, ranges, coverage_known = _block_coverage(node, assigns)
+        if primary is not None:
             return _Statement(
                 kind="indented_block",
-                sort_key=float(addr),
-                address=addr,
-                addr_ranges=(),
+                sort_key=float(primary),
+                address=primary,
+                addr_ranges=ranges,
                 original_index=original_index,
+                coverage_known=coverage_known,
             )
         return _Statement(
             kind="soft_anchor",
@@ -499,6 +608,7 @@ def _parse_statements(text: str) -> list[_Statement]:
         return []
     lines = body_text.split("\n")
     module = ast.parse(text)
+    module_assigns = _collect_module_assigns(module)
 
     # First pass: locate the render-start node, if any.
     render_start_index: int | None = None
@@ -539,7 +649,9 @@ def _parse_statements(text: str) -> list[_Statement]:
                 original_index=index,
             )
         else:
-            stmt = _classify_pre_render(node, original_index=index)
+            stmt = _classify_pre_render(
+                node, original_index=index, assigns=module_assigns
+            )
 
         stmt.leading_lines = leading_for_next
         stmt.statement_lines = lines[start_lineno - 1:end_lineno]
@@ -637,13 +749,39 @@ def _build_graph(
         if render_start_idx is not None:
             add_edge(u, render_start_idx)
 
-    # 2. add_move → matching annotations.
+    # 2. add_move → annotations / blocks / soft anchors whose
+    # addresses fall in the moved range. Indented blocks where we
+    # couldn't fully resolve coverage (``coverage_known=False``)
+    # and soft anchors get an unconditional edge — the conservative
+    # rule from issue #14: better to over-constrain than to silently
+    # lose annotations because the loop ran before its move.
+    def _ranges_overlap(
+        a: tuple[tuple[int, int], ...],
+        b: tuple[tuple[int, int], ...],
+    ) -> bool:
+        for a_lo, a_hi in a:
+            for b_lo, b_hi in b:
+                if a_lo < b_hi and b_lo < a_hi:
+                    return True
+        return False
+
     for u in range(n):
         s = statements[u]
         if s.kind != "add_move":
             continue
         for v in pre_render_non_setup_indices:
+            if v == u:
+                continue
             t = statements[v]
+            if t.kind == "soft_anchor":
+                add_edge(u, v)
+                continue
+            if t.kind == "indented_block":
+                if not t.coverage_known or _ranges_overlap(
+                    s.addr_ranges, t.addr_ranges
+                ):
+                    add_edge(u, v)
+                continue
             if t.address is None:
                 continue
             if any(lo <= t.address < hi for lo, hi in s.addr_ranges):
