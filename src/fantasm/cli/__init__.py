@@ -21,6 +21,7 @@ from .context import context
 from .coverage import coverage
 from .data import data_group
 from .disassemble import disassemble
+from .driver import driver
 from .fingerprint import fingerprint_cmd
 from .hooks import hooks_group
 from .labels import labels
@@ -46,6 +47,7 @@ for _cmd in (
     coverage,
     data_group,
     disassemble,
+    driver,
     fingerprint_cmd,
     hooks_group,
     labels,

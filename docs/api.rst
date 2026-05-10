@@ -144,6 +144,12 @@ Annotation backfill across versions
 .. automodule:: fantasm.api.backfill
 
 
+Driver-script address sorting
+-----------------------------
+
+.. automodule:: fantasm.api.driver_sort
+
+
 Version graph (DAG) and chain composition
 -----------------------------------------
 

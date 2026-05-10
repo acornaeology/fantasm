@@ -62,6 +62,15 @@ from .bytes_search import (
     find_byte_pattern,
     parse_byte_pattern,
 )
+from .driver_sort import (
+    ANCHOR_FUNCTIONS,
+    SORTABLE_FUNCTIONS,
+    Unit,
+    build_units,
+    emit_units,
+    is_sorted,
+    sort_driver_text,
+)
 from .data_review import (
     Classification,
     CodeClassification,
