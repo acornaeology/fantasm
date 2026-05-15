@@ -70,6 +70,12 @@ Call graph and basic blocks
 .. automodule:: fantasm.api.cfg
 
 
+Graphviz and GraphML rendering
+------------------------------
+
+.. automodule:: fantasm.api.dot
+
+
 Code context (depth, sub-context, uncommented gaps)
 ---------------------------------------------------
 

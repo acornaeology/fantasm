@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.audit import find_sub
 from ..api.cfg import find_basic_blocks, resolve_sub_node
 from ..api.context import compute_call_depths, extract_sub_context
+from ..api.dot import (
+    DotBinaryNotFoundError,
+    basic_blocks_to_dot,
+    basic_blocks_to_graphml,
+    call_graph_to_dot,
+    call_graph_to_graphml,
+    filter_call_graph,
+    render_dot,
+)
 from ..cli_helpers import analysis_context
 
 
@@ -394,3 +406,223 @@ def cfg_sub_context(
         call_sites=Report(data=call_table),
         exits=Report(data=exit_table),
     )
+
+
+def _write_graph_output(
+    text: str,
+    output_filepath: Path | None,
+    *,
+    render_format: str | None,
+) -> None:
+    """Emit graph source to stdout / a file, optionally piping through ``dot``."""
+    if render_format is not None:
+        if output_filepath is None:
+            raise click.UsageError(
+                "--render requires --output (the rendered image path)"
+            )
+        try:
+            render_dot(text, output_filepath, format=render_format)
+        except DotBinaryNotFoundError as exc:
+            raise click.UsageError(str(exc)) from exc
+        click.echo(f"wrote {output_filepath}", err=True)
+        return
+    if output_filepath is None:
+        sys.stdout.write(text)
+    else:
+        output_filepath.write_text(text)
+        click.echo(f"wrote {output_filepath}", err=True)
+
+
+@cfg.command(
+    "dot-call-graph",
+    help=(
+        "Emit the inter-procedural call graph as graphviz dot (or "
+        "GraphML). Pipe into ``dot -Tpng`` / ``dot -Tsvg`` for an "
+        "image, or use --render to do that in one step. Filters let "
+        "you focus on a neighbourhood; the whole graph for a real ROM "
+        "is usually too dense to read."
+    ),
+)
+@click.argument("version_id")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["dot", "graphml"]),
+    default="dot",
+    show_default=True,
+    help="Graph source format.",
+)
+@click.option(
+    "-o",
+    "--output",
+    "output_filepath",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write source / rendered image to this file (default: stdout for source).",
+)
+@click.option(
+    "--render",
+    "render_format",
+    type=click.Choice(["png", "svg", "pdf"]),
+    default=None,
+    help="Shell out to ``dot`` and write a rendered image instead of source.",
+)
+@click.option(
+    "-F",
+    "--focus",
+    "focus",
+    multiple=True,
+    help="Centre on this subroutine (hex addr or name). Repeatable.",
+)
+@click.option(
+    "--depth",
+    type=click.IntRange(0, 1000),
+    default=None,
+    help="Neighbourhood radius (both ancestors and descendants).",
+)
+@click.option(
+    "--up-depth",
+    type=click.IntRange(0, 1000),
+    default=None,
+    help="Ancestor radius (callers of --focus). Overrides --depth.",
+)
+@click.option(
+    "--down-depth",
+    type=click.IntRange(0, 1000),
+    default=None,
+    help="Descendant radius (callees of --focus). Overrides --depth.",
+)
+@click.option(
+    "--exclude-external",
+    is_flag=True,
+    help="Drop OS / external-entry nodes (those above the ROM range).",
+)
+@click.option(
+    "--include-pattern",
+    default=None,
+    help="Keep nodes whose name matches this regex.",
+)
+@click.option(
+    "--exclude-pattern",
+    default=None,
+    help="Drop nodes whose name matches this regex.",
+)
+@click.option(
+    "--min-degree",
+    type=click.IntRange(0, 100),
+    default=0,
+    show_default=True,
+    help="Drop nodes whose total degree is below this threshold (focus exempt).",
+)
+def cfg_dot_call_graph(
+    version_id: str,
+    output_format: str,
+    output_filepath: Path | None,
+    render_format: str | None,
+    focus: tuple[str, ...],
+    depth: int | None,
+    up_depth: int | None,
+    down_depth: int | None,
+    exclude_external: bool,
+    include_pattern: str | None,
+    exclude_pattern: str | None,
+    min_degree: int,
+) -> None:
+    actx = analysis_context(click.get_current_context(), version_id)
+    graph = actx.call_graph
+
+    if focus:
+        effective_up = up_depth if up_depth is not None else depth
+        effective_down = down_depth if down_depth is not None else depth
+    else:
+        effective_up = None
+        effective_down = None
+
+    try:
+        filtered = filter_call_graph(
+            graph,
+            focus=focus or None,
+            up_depth=effective_up,
+            down_depth=effective_down,
+            exclude_external=exclude_external,
+            include_pattern=include_pattern,
+            exclude_pattern=exclude_pattern,
+            min_degree=min_degree,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    if output_format == "graphml":
+        text = call_graph_to_graphml(filtered)
+    else:
+        title = f"{version_id} call graph"
+        text = call_graph_to_dot(filtered, title=title)
+
+    _write_graph_output(text, output_filepath, render_format=render_format)
+
+
+@cfg.command(
+    "dot-flow",
+    help=(
+        "Emit the basic-block control-flow graph for ONE subroutine "
+        "as graphviz dot (or GraphML). Each block becomes a node "
+        "listing its instructions; edges are coloured by exit kind "
+        "(branch / fall / jump). Use --render to produce a png/svg/pdf "
+        "in one step."
+    ),
+)
+@click.argument("version_id")
+@click.argument("target")
+@click.option(
+    "-f",
+    "--format",
+    "output_format",
+    type=click.Choice(["dot", "graphml"]),
+    default="dot",
+    show_default=True,
+    help="Graph source format.",
+)
+@click.option(
+    "-o",
+    "--output",
+    "output_filepath",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write source / rendered image to this file (default: stdout for source).",
+)
+@click.option(
+    "--render",
+    "render_format",
+    type=click.Choice(["png", "svg", "pdf"]),
+    default=None,
+    help="Shell out to ``dot`` and write a rendered image instead of source.",
+)
+def cfg_dot_flow(
+    version_id: str,
+    target: str,
+    output_format: str,
+    output_filepath: Path | None,
+    render_format: str | None,
+) -> None:
+    actx = analysis_context(click.get_current_context(), version_id)
+    sub = find_sub(actx.audit_subs, target)
+    if sub is None:
+        raise click.UsageError(
+            f"subroutine {target!r} not found in {version_id}"
+        )
+    blocks = find_basic_blocks(sub["items"])
+    if not blocks:
+        raise click.UsageError(
+            f"no basic blocks recovered for {sub['name']} "
+            f"(&{sub['addr']:04X}) — empty or non-code body?"
+        )
+
+    if output_format == "graphml":
+        text = basic_blocks_to_graphml(
+            blocks, sub_name=sub["name"], sub_addr=sub["addr"]
+        )
+    else:
+        text = basic_blocks_to_dot(
+            blocks, sub_name=sub["name"], sub_addr=sub["addr"]
+        )
+
+    _write_graph_output(text, output_filepath, render_format=render_format)
