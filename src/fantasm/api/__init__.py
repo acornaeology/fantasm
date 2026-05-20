@@ -143,10 +143,13 @@ from .compare import (
     parse_rom_header,
 )
 from .rename_labels import (
+    apply_renames_inline,
     apply_renames_to_lines,
     find_insert_position,
     find_rename_section,
+    parse_label_decl_lines,
     parse_label_declarations,
+    update_ref_strings,
 )
 from .project import (
     ProjectInitConfig,

@@ -24,7 +24,11 @@ from ..api.labels import (
     label_inventory,
     sort_labels,
 )
-from ..api.rename_labels import apply_renames_to_lines
+from ..api.rename_labels import (
+    apply_renames_inline,
+    apply_renames_to_lines,
+    update_ref_strings,
+)
 from ..cli_helpers import analysis_context
 from ._options import (
     label_match_option,
@@ -113,7 +117,19 @@ def labels_classify(version_id: str, category: str | None) -> Reports:
     help=(
         "Apply a renames TOML file to a disassembly driver script. "
         "The TOML file should declare a `renames` array of inline "
-        "tables, each with `addr` (integer) and `name` (string). "
+        "tables, each with `addr` (integer) and `name` (string).\n"
+        "\n"
+        "Default (inline) mode rewrites each scattered `label(0xXXXX, …)` "
+        "or `d.label(0xXXXX, …)` declaration in place wherever it sits in "
+        "the driver, and errors if any requested address has no matching "
+        "declaration. Pass --section for the legacy override-cluster "
+        "behaviour that operates only on a `# Code label renames` block.\n"
+        "\n"
+        "Pass --update-refs to also rewrite textual references to the old "
+        "name in `d.comment(\"…\")` arguments, `description=\"\"\"…\"\"\"` "
+        "blocks, and Markdown `[`name`](address:…)` anchors. Other "
+        "occurrences are left alone.\n"
+        "\n"
         "Writes the rewritten driver to stdout by default; pass "
         "--in-place or --output to write to a file."
     ),
@@ -125,6 +141,24 @@ def labels_classify(version_id: str, category: str | None) -> Reports:
 @click.argument(
     "renames_filepath",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--section",
+    is_flag=True,
+    help=(
+        "Use the legacy section-based rewrite that targets a "
+        "`# Code label renames` block. Default is inline rewrite of "
+        "scattered declarations."
+    ),
+)
+@click.option(
+    "--update-refs",
+    is_flag=True,
+    help=(
+        "Also rewrite textual references to the renamed labels in "
+        "d.comment(\"…\") args, description=\"\"\"…\"\"\" blocks, and "
+        "Markdown [`name`](address:…) anchors. Inline mode only."
+    ),
 )
 @click.option(
     "--in-place",
@@ -145,6 +179,8 @@ def labels_classify(version_id: str, category: str | None) -> Reports:
 def labels_apply(
     driver_filepath: Path,
     renames_filepath: Path,
+    section: bool,
+    update_refs: bool,
     in_place: bool,
     output_filepath: Path | None,
     dry_run: bool,
@@ -152,6 +188,10 @@ def labels_apply(
     if sum([in_place, output_filepath is not None, dry_run]) > 1:
         raise click.UsageError(
             "pass at most one of --in-place, --output, --dry-run"
+        )
+    if update_refs and section:
+        raise click.UsageError(
+            "--update-refs is only meaningful in inline mode (drop --section)"
         )
 
     renames_data = tomllib.loads(renames_filepath.read_text())
@@ -171,12 +211,24 @@ def labels_apply(
 
     original = driver_filepath.read_text()
     lines = original.splitlines(keepends=True)
+    ref_count = 0
     try:
-        new_lines = apply_renames_to_lines(lines, rename_map)
+        if section:
+            new_lines = apply_renames_to_lines(lines, rename_map)
+        else:
+            new_lines, name_map = apply_renames_inline(lines, rename_map)
+            if update_refs:
+                new_lines, ref_count = update_ref_strings(
+                    new_lines, name_map
+                )
     except LookupError as exc:
         raise click.UsageError(str(exc)) from exc
 
     new_text = "".join(new_lines)
+
+    summary = f"{len(rename_map)} rename(s)"
+    if update_refs:
+        summary += f" + {ref_count} textual reference(s)"
 
     if dry_run:
         diff = difflib.unified_diff(
@@ -189,15 +241,11 @@ def labels_apply(
         return
     if in_place:
         driver_filepath.write_text(new_text)
-        click.echo(
-            f"Wrote {len(rename_map)} rename(s) to {driver_filepath}"
-        )
+        click.echo(f"Wrote {summary} to {driver_filepath}")
         return
     if output_filepath is not None:
         output_filepath.write_text(new_text)
-        click.echo(
-            f"Wrote {len(rename_map)} rename(s) to {output_filepath}"
-        )
+        click.echo(f"Wrote {summary} to {output_filepath}")
         return
     click.echo(new_text, nl=False)
 

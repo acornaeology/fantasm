@@ -97,7 +97,7 @@ def test_labels_classify(tmp_path: Path) -> None:
     assert "c8002" in result.output
 
 
-def test_labels_apply_dry_run(tmp_path: Path) -> None:
+def test_labels_apply_section_dry_run(tmp_path: Path) -> None:
     runner = CliRunner()
     driver_filepath = tmp_path / "driver.py"
     driver_filepath.write_text(
@@ -126,7 +126,7 @@ def test_labels_apply_dry_run(tmp_path: Path) -> None:
         [
             "labels", "apply",
             str(driver_filepath), str(renames_filepath),
-            "--dry-run",
+            "--section", "--dry-run",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -135,7 +135,7 @@ def test_labels_apply_dry_run(tmp_path: Path) -> None:
     assert "renamed_first" not in driver_filepath.read_text()
 
 
-def test_labels_apply_in_place(tmp_path: Path) -> None:
+def test_labels_apply_section_in_place(tmp_path: Path) -> None:
     runner = CliRunner()
     driver_filepath = tmp_path / "driver.py"
     driver_filepath.write_text(
@@ -151,7 +151,7 @@ def test_labels_apply_in_place(tmp_path: Path) -> None:
         [
             "labels", "apply",
             str(driver_filepath), str(renames_filepath),
-            "--in-place",
+            "--section", "--in-place",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -173,6 +173,132 @@ def test_labels_apply_missing_renames_array(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "renames" in result.output
+
+
+# --- labels apply --- inline (default) mode -----------------------
+
+
+def test_labels_apply_inline_default_rewrites_scattered_decls(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    driver_filepath = tmp_path / "driver.py"
+    driver_filepath.write_text(
+        "import py8dis\n"
+        "d = py8dis.Disassembler()\n"
+        "\n"
+        'd.label(0xA3FE, "return_from_2bit_index")\n'
+        "# some inline comment\n"
+        'd.label(0x853A, "return_from_advance_buf")\n'
+        'label(0x9D70, "return_from_advance_y")\n'
+    )
+    renames_filepath = tmp_path / "renames.toml"
+    renames_filepath.write_text(
+        'renames = [\n'
+        '  { addr = 0xA3FE, name = "rts_2bit_index" },\n'
+        '  { addr = 0x853A, name = "rts_advance_buf" },\n'
+        '  { addr = 0x9D70, name = "rts_advance_y" },\n'
+        ']\n'
+    )
+    result = runner.invoke(
+        main,
+        [
+            "labels", "apply",
+            str(driver_filepath), str(renames_filepath),
+            "--in-place",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    rewritten = driver_filepath.read_text()
+    assert 'd.label(0xA3FE, "rts_2bit_index")' in rewritten
+    assert 'd.label(0x853A, "rts_advance_buf")' in rewritten
+    assert 'label(0x9D70, "rts_advance_y")' in rewritten
+    assert "return_from_" not in rewritten
+
+
+def test_labels_apply_inline_errors_on_missing_addr(tmp_path: Path) -> None:
+    runner = CliRunner()
+    driver_filepath = tmp_path / "driver.py"
+    driver_filepath.write_text(
+        'd.label(0x8000, "init")\n'
+    )
+    renames_filepath = tmp_path / "renames.toml"
+    renames_filepath.write_text(
+        'renames = [\n'
+        '  { addr = 0x8000, name = "boot" },\n'
+        '  { addr = 0x9999, name = "no_match" },\n'
+        ']\n'
+    )
+    result = runner.invoke(
+        main,
+        [
+            "labels", "apply",
+            str(driver_filepath), str(renames_filepath),
+            "--in-place",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "0x9999" in result.output
+    # Driver must not be partially rewritten.
+    assert 'd.label(0x8000, "init")' in driver_filepath.read_text()
+
+
+def test_labels_apply_inline_update_refs(tmp_path: Path) -> None:
+    runner = CliRunner()
+    driver_filepath = tmp_path / "driver.py"
+    driver_filepath.write_text(
+        'd.label(0xA3FE, "return_from_2bit_index")\n'
+        'd.comment(0xA3FE, "branches into return_from_2bit_index here")\n'
+        'description = """The return_from_2bit_index tail handles the\n'
+        'common case."""\n'
+        '# See [`return_from_2bit_index`](address:0xA3FE) for the tail.\n'
+        '# A different identifier: return_from_2bit_index_helper stays put.\n'
+    )
+    renames_filepath = tmp_path / "renames.toml"
+    renames_filepath.write_text(
+        'renames = [{ addr = 0xA3FE, name = "rts_2bit_index" }]\n'
+    )
+    result = runner.invoke(
+        main,
+        [
+            "labels", "apply",
+            str(driver_filepath), str(renames_filepath),
+            "--update-refs", "--in-place",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    rewritten = driver_filepath.read_text()
+    assert 'd.label(0xA3FE, "rts_2bit_index")' in rewritten
+    assert 'd.comment(0xA3FE, "branches into rts_2bit_index here")' in rewritten
+    assert "The rts_2bit_index tail" in rewritten
+    assert "[`rts_2bit_index`](address:0xA3FE)" in rewritten
+    # Word-boundary: the longer identifier shouldn't be touched.
+    assert "return_from_2bit_index_helper" in rewritten
+
+
+def test_labels_apply_inline_rejects_update_refs_with_section(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    driver_filepath = tmp_path / "driver.py"
+    driver_filepath.write_text(
+        "# Code label renames\n"
+        'label(0x8010, "first")\n'
+    )
+    renames_filepath = tmp_path / "renames.toml"
+    renames_filepath.write_text(
+        'renames = [{ addr = 0x8010, name = "second" }]\n'
+    )
+    result = runner.invoke(
+        main,
+        [
+            "labels", "apply",
+            str(driver_filepath), str(renames_filepath),
+            "--section", "--update-refs",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "inline mode" in result.output
 
 
 # --- labels list --------------------------------------------------
