@@ -11,7 +11,10 @@ from fantasm.api.labels import (
     build_target_refs,
     classify_labels,
     collect_auto_labels,
+    collect_labels,
     find_containing_sub_for_addr,
+    inbound_refs_to,
+    label_inventory,
     sort_labels,
 )
 
@@ -251,3 +254,132 @@ def test_category_order_has_five_categories() -> None:
     assert "data" in CATEGORY_ORDER
     assert "internal_loop" in CATEGORY_ORDER
     assert "internal_conditional" in CATEGORY_ORDER
+
+
+# --- collect_labels (inventory source) -----------------------------
+
+
+class TestCollectLabels:
+    def test_driver_labels_from_items(self) -> None:
+        data = {
+            "items": [
+                {"addr": 0x8000, "labels": ["init", "c8000"]},
+                {"addr": 0x8004, "labels": []},
+            ]
+        }
+        assert collect_labels(data) == [
+            {"name": "init", "addr": 0x8000, "source": "driver"},
+            {"name": "c8000", "addr": 0x8000, "source": "driver"},
+        ]
+
+    def test_driver_labels_from_sub_labels(self) -> None:
+        data = {
+            "items": [
+                {
+                    "addr": 0x8000,
+                    "labels": ["entry"],
+                    "sub_labels": {"32770": ["mid"]},
+                }
+            ]
+        }
+        assert collect_labels(data) == [
+            {"name": "entry", "addr": 0x8000, "source": "driver"},
+            {"name": "mid", "addr": 0x8002, "source": "driver"},
+        ]
+
+    def test_env_labels_tagged_source(self) -> None:
+        data = {
+            "items": [],
+            "external_labels": {"oswrch": 0xFFEE, "osbyte": 0xFFF4},
+        }
+        result = collect_labels(data)
+        assert {(r["name"], r["addr"], r["source"]) for r in result} == {
+            ("oswrch", 0xFFEE, "env"),
+            ("osbyte", 0xFFF4, "env"),
+        }
+
+    def test_handles_missing_fields(self) -> None:
+        assert collect_labels({}) == []
+
+
+# --- inbound_refs_to -----------------------------------------------
+
+
+class TestInboundRefsTo:
+    def test_code_flow_refs(self) -> None:
+        items = [
+            {"addr": 0x8000, "mnemonic": "jsr", "target": 0x8100},
+            {"addr": 0x8100, "mnemonic": "lda"},
+            {"addr": 0x8200, "mnemonic": "jmp", "target": 0x8100},
+        ]
+        items_by_addr = {it["addr"]: it for it in items}
+        target_refs = build_target_refs(items)
+        refs = inbound_refs_to(0x8100, items_by_addr, target_refs)
+        assert [r["addr"] for r in refs] == [0x8000, 0x8200]
+        assert [r["mnemonic"] for r in refs] == ["jsr", "jmp"]
+
+    def test_data_refs_from_references_field(self) -> None:
+        items = [
+            {"addr": 0x8000, "mnemonic": "lda"},
+            {
+                "addr": 0x8100,
+                "mnemonic": "byte",
+                "references": [0x8000],
+            },
+        ]
+        items_by_addr = {it["addr"]: it for it in items}
+        refs = inbound_refs_to(0x8100, items_by_addr, {})
+        assert refs == [{"addr": 0x8000, "mnemonic": "lda"}]
+
+    def test_code_flow_wins_over_data_dup(self) -> None:
+        items = [
+            {"addr": 0x8000, "mnemonic": "jsr", "target": 0x8100},
+            {"addr": 0x8100, "mnemonic": "lda", "references": [0x8000]},
+        ]
+        items_by_addr = {it["addr"]: it for it in items}
+        target_refs = build_target_refs(items)
+        refs = inbound_refs_to(0x8100, items_by_addr, target_refs)
+        assert refs == [{"addr": 0x8000, "mnemonic": "jsr"}]
+
+
+# --- label_inventory -----------------------------------------------
+
+
+class TestLabelInventory:
+    def test_combines_driver_and_env(self) -> None:
+        data = {
+            "items": [
+                {"addr": 0x8000, "labels": ["init"]},
+                {
+                    "addr": 0x8100,
+                    "mnemonic": "jsr",
+                    "target": 0x8000,
+                    "labels": [],
+                },
+            ],
+            "external_labels": {"oswrch": 0xFFEE},
+        }
+        inventory = label_inventory(data)
+        by_name = {r["name"]: r for r in inventory}
+        assert by_name["init"]["source"] == "driver"
+        assert by_name["init"]["addr"] == 0x8000
+        assert by_name["init"]["length"] == 4
+        assert by_name["init"]["ref_count"] == 1
+        assert by_name["oswrch"]["source"] == "env"
+        assert by_name["oswrch"]["ref_count"] == 0
+
+    def test_driver_dedupe_on_name_and_addr(self) -> None:
+        # A label appearing as both an item label and a sub-label of
+        # the same item should collapse to a single inventory entry.
+        data = {
+            "items": [
+                {
+                    "addr": 0x8000,
+                    "labels": ["main"],
+                    "sub_labels": {"32768": ["main"]},
+                }
+            ]
+        }
+        inventory = label_inventory(data)
+        assert len(inventory) == 1
+        assert inventory[0]["name"] == "main"

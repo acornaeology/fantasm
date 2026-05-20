@@ -217,12 +217,142 @@ def sort_labels(classified: Sequence[dict]) -> list[dict]:
     )
 
 
+# --- Inventory helpers (powering `fantasm labels list` / `refs`) ----
+
+
+LABEL_SOURCES: tuple[str, ...] = ("driver", "env")
+
+
+def collect_labels(data: dict) -> list[dict]:
+    """Return every label declared in a disassembly, with source tag.
+
+    Walks ``data["items"]``'s ``"labels"`` and ``"sub_labels"`` fields
+    (tagged ``source="driver"``) and ``data["external_labels"]``
+    (tagged ``source="env"``). Each entry is a dict with keys
+    ``name``, ``addr``, ``source``.
+
+    Driver-defined labels are emitted in item / declaration order;
+    environment labels follow, in declaration order from the JSON.
+    Duplicates are not collapsed — a label that appears as both an
+    item label and a sub-label will yield two records. Callers that
+    need uniqueness should dedupe on ``(name, addr)``.
+    """
+    results: list[dict] = []
+    for item in data.get("items", []):
+        addr = item["addr"]
+        for label in item.get("labels", []):
+            results.append({"name": label, "addr": addr, "source": "driver"})
+        for addr_str, sub_labels in item.get("sub_labels", {}).items():
+            sub_addr = int(addr_str)
+            for label in sub_labels:
+                results.append(
+                    {"name": label, "addr": sub_addr, "source": "driver"}
+                )
+    for name, addr in data.get("external_labels", {}).items():
+        results.append({"name": name, "addr": int(addr), "source": "env"})
+    return results
+
+
+def inbound_refs_to(
+    addr: int,
+    items_by_addr: dict[int, dict],
+    target_refs: dict[int, list[dict]],
+) -> list[dict]:
+    """Return ref-site records pointing at ``addr``.
+
+    Combines two sources:
+
+    * code-flow references — items whose ``target == addr`` (taken
+      from ``target_refs``).
+    * data references — addresses listed in the ``references`` field
+      of the item *at* ``addr`` (table / pointer references the
+      disassembler couldn't attribute to a specific instruction).
+
+    Each record carries ``{"addr", "mnemonic"}``. Code-flow refs use
+    the referencing item's mnemonic; data refs use the mnemonic of
+    the item at the referencing address when available, else
+    ``"data_ref"``. Sorted by ``addr``; duplicates (same source addr)
+    are collapsed, with the code-flow record taking precedence.
+    """
+    seen: dict[int, dict] = {}
+    for ref_item in target_refs.get(addr, []):
+        seen[ref_item["addr"]] = {
+            "addr": ref_item["addr"],
+            "mnemonic": ref_item.get("mnemonic", "?"),
+        }
+    item_at_addr = items_by_addr.get(addr)
+    if item_at_addr:
+        for ref_addr in item_at_addr.get("references", []):
+            if ref_addr in seen:
+                continue
+            ref_item = items_by_addr.get(ref_addr)
+            mnemonic = (
+                ref_item.get("mnemonic", "data_ref")
+                if ref_item
+                else "data_ref"
+            )
+            seen[ref_addr] = {"addr": ref_addr, "mnemonic": mnemonic}
+    return sorted(seen.values(), key=lambda r: r["addr"])
+
+
+def label_inventory(data: dict) -> list[dict]:
+    """Build the full label inventory for one disassembly.
+
+    Each entry: ``{"name", "addr", "source", "length", "ref_count",
+    "refs"}``. ``length`` is ``len(name)``. ``refs`` is the list
+    returned by :func:`inbound_refs_to` for the label's address;
+    ``ref_count`` is its length, broken out so sorts / filters
+    don't pay the indexing cost.
+
+    Driver labels are deduped on ``(name, addr)`` (a label can show
+    up as both an item label and a sub-label of the parent item);
+    env labels are kept as-is.
+    """
+    items = data.get("items", [])
+    items_by_addr = {item["addr"]: item for item in items}
+    target_refs = build_target_refs(items)
+
+    ref_cache: dict[int, list[dict]] = {}
+
+    def refs_for(addr: int) -> list[dict]:
+        if addr not in ref_cache:
+            ref_cache[addr] = inbound_refs_to(
+                addr, items_by_addr, target_refs
+            )
+        return ref_cache[addr]
+
+    seen_driver: set[tuple[str, int]] = set()
+    results: list[dict] = []
+    for entry in collect_labels(data):
+        if entry["source"] == "driver":
+            key = (entry["name"], entry["addr"])
+            if key in seen_driver:
+                continue
+            seen_driver.add(key)
+        refs = refs_for(entry["addr"])
+        results.append(
+            {
+                "name": entry["name"],
+                "addr": entry["addr"],
+                "source": entry["source"],
+                "length": len(entry["name"]),
+                "ref_count": len(refs),
+                "refs": refs,
+            }
+        )
+    return results
+
+
 __all__ = [
     "AUTO_LABEL_RE",
     "CATEGORY_ORDER",
+    "LABEL_SOURCES",
     "build_target_refs",
     "classify_labels",
     "collect_auto_labels",
+    "collect_labels",
     "find_containing_sub_for_addr",
+    "inbound_refs_to",
+    "label_inventory",
     "sort_labels",
 ]

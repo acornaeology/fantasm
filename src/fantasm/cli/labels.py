@@ -3,20 +3,45 @@
 from __future__ import annotations
 
 import difflib
+import re
 import tomllib
 from pathlib import Path
 
 import click
-from asyoulikeit import Report, Reports, TableContent, report_output
+from asyoulikeit import (
+    Report,
+    Reports,
+    TableContent,
+    TreeContent,
+    report_output,
+)
 
 from ..api.labels import (
     build_target_refs,
     classify_labels,
     collect_auto_labels,
+    inbound_refs_to,
+    label_inventory,
     sort_labels,
 )
 from ..api.rename_labels import apply_renames_to_lines
 from ..cli_helpers import analysis_context
+from ._options import (
+    label_match_option,
+    label_max_length_option,
+    label_min_length_option,
+    label_reverse_option,
+    label_sort_option,
+    label_source_option,
+)
+
+
+_LABEL_SORT_KEYS: dict[str, callable] = {
+    "name": lambda r: (r["name"], r["addr"]),
+    "addr": lambda r: (r["addr"], r["name"]),
+    "len": lambda r: (r["length"], r["name"]),
+    "refs": lambda r: (r["ref_count"], r["name"]),
+}
 
 
 @click.group(help="Auto-generated label classification and renaming.")
@@ -175,3 +200,169 @@ def labels_apply(
         )
         return
     click.echo(new_text, nl=False)
+
+
+@labels.command(
+    "list",
+    help=(
+        "Inventory every label declared in a version's disassembly. "
+        "By default shows name, address, source (driver vs env), "
+        "length, and inbound reference count. Filter with --match / "
+        "--min-length / --max-length / --source; sort with --sort / "
+        "--reverse."
+    ),
+)
+@click.argument("version_id")
+@label_sort_option
+@label_reverse_option
+@label_min_length_option
+@label_max_length_option
+@label_match_option
+@label_source_option
+@report_output(reports={"labels": "Label inventory"})
+def labels_list(
+    version_id: str,
+    sort_key: str,
+    reverse: bool,
+    min_length: int | None,
+    max_length: int | None,
+    match_pattern: str | None,
+    source: str,
+) -> Reports:
+    actx = analysis_context(click.get_current_context(), version_id)
+    inventory = label_inventory(actx.data)
+
+    try:
+        pattern = re.compile(match_pattern) if match_pattern else None
+    except re.error as exc:
+        raise click.UsageError(
+            f"invalid --match regular expression: {exc}"
+        ) from exc
+
+    source_lc = source.lower()
+    if source_lc != "all":
+        inventory = [r for r in inventory if r["source"] == source_lc]
+    if min_length is not None:
+        inventory = [r for r in inventory if r["length"] >= min_length]
+    if max_length is not None:
+        inventory = [r for r in inventory if r["length"] <= max_length]
+    if pattern is not None:
+        inventory = [r for r in inventory if pattern.search(r["name"])]
+
+    inventory.sort(key=_LABEL_SORT_KEYS[sort_key.lower()], reverse=reverse)
+
+    description_parts = [f"{len(inventory)} label(s)"]
+    if source_lc != "all":
+        description_parts.append(f"source={source_lc}")
+    if min_length is not None:
+        description_parts.append(f"min-length={min_length}")
+    if max_length is not None:
+        description_parts.append(f"max-length={max_length}")
+    if match_pattern is not None:
+        description_parts.append(f"match={match_pattern!r}")
+
+    table = (
+        TableContent(
+            title=f"Labels in {version_id}",
+            description=", ".join(description_parts),
+        )
+        .add_column("name", "Name")
+        .add_column("addr", "Addr")
+        .add_column("source", "Source")
+        .add_column("length", "Len")
+        .add_column("refs", "Refs")
+    )
+    for record in inventory:
+        table.add_row(
+            name=record["name"],
+            addr=f"&{record['addr']:04X}",
+            source=record["source"],
+            length=str(record["length"]),
+            refs=str(record["ref_count"]),
+        )
+    return Reports(labels=Report(data=table))
+
+
+@labels.command(
+    "refs",
+    help=(
+        "Show the inbound reference sites for a single label, "
+        "as a tree rooted at the label. Combines code-flow refs "
+        "(items whose target is the label's address) and data "
+        "refs (table / pointer references). Exits with an error "
+        "if the label is not declared in the version."
+    ),
+)
+@click.argument("version_id")
+@click.argument("label_name")
+@report_output(reports={"refs": "Label reference sites"})
+def labels_refs(version_id: str, label_name: str) -> Reports:
+    actx = analysis_context(click.get_current_context(), version_id)
+    data = actx.data
+    items = data.get("items", [])
+    items_by_addr = {item["addr"]: item for item in items}
+    target_refs = build_target_refs(items)
+
+    addrs: list[int] = []
+    for item in items:
+        if label_name in item.get("labels", []):
+            addrs.append(item["addr"])
+        for addr_str, sub_labels in item.get("sub_labels", {}).items():
+            if label_name in sub_labels:
+                addrs.append(int(addr_str))
+    external_addr = data.get("external_labels", {}).get(label_name)
+    source = "driver" if addrs else None
+    if external_addr is not None and not addrs:
+        addrs.append(int(external_addr))
+        source = "env"
+
+    if not addrs:
+        raise click.UsageError(
+            f"label {label_name!r} not found in {version_id}"
+        )
+
+    deduped: list[int] = []
+    for addr in addrs:
+        if addr not in deduped:
+            deduped.append(addr)
+
+    refs_by_addr = {
+        addr: inbound_refs_to(addr, items_by_addr, target_refs)
+        for addr in deduped
+    }
+    total = sum(len(refs) for refs in refs_by_addr.values())
+
+    tree = (
+        TreeContent(
+            title=f"References to {label_name} in {version_id}",
+            description=(
+                f"{total} inbound reference(s) across "
+                f"{len(deduped)} declaration(s)"
+            ),
+        )
+        .add_column("site", "Site", header=True)
+        .add_column("addr", "Addr")
+        .add_column("mnemonic", "Op")
+    )
+    label_node = tree.add_root(
+        site=f"{label_name} ({source})",
+        addr=f"&{deduped[0]:04X}" if len(deduped) == 1 else "",
+        mnemonic="",
+    )
+    for decl_addr in deduped:
+        decl_refs = refs_by_addr[decl_addr]
+        if len(deduped) == 1:
+            decl_node = label_node
+        else:
+            decl_node = label_node.add_child(
+                site=f"@{decl_addr:04X}",
+                addr=f"&{decl_addr:04X}",
+                mnemonic="",
+            )
+        for ref in decl_refs:
+            decl_node.add_child(
+                site=ref["mnemonic"],
+                addr=f"&{ref['addr']:04X}",
+                mnemonic=ref["mnemonic"],
+            )
+    return Reports(refs=Report(data=tree))

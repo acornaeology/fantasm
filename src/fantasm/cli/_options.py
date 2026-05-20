@@ -27,3 +27,54 @@ rom_base_option = click.option(
     default=None,
     help="ROM load address; defaults to [rom] base_address (or 0x8000).",
 )
+
+
+LABEL_SORT_KEYS = ("name", "addr", "len", "refs")
+
+
+label_sort_option = click.option(
+    "--sort",
+    "sort_key",
+    type=click.Choice(LABEL_SORT_KEYS, case_sensitive=False),
+    default="name",
+    show_default=True,
+    help="Sort key.",
+)
+
+label_reverse_option = click.option(
+    "--reverse",
+    is_flag=True,
+    help="Reverse the sort order.",
+)
+
+label_min_length_option = click.option(
+    "--min-length",
+    type=click.IntRange(1, 256),
+    default=None,
+    help="Only labels at least N characters long.",
+)
+
+label_max_length_option = click.option(
+    "--max-length",
+    type=click.IntRange(1, 256),
+    default=None,
+    help="Only labels at most N characters long.",
+)
+
+label_match_option = click.option(
+    "--match",
+    "match_pattern",
+    default=None,
+    help="Only labels whose name matches this regular expression.",
+)
+
+label_source_option = click.option(
+    "--source",
+    type=click.Choice(["driver", "env", "all"], case_sensitive=False),
+    default="all",
+    show_default=True,
+    help=(
+        "Restrict to driver-defined labels, environment-supplied "
+        "constants, or both."
+    ),
+)
