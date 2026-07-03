@@ -28,10 +28,10 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.13"
-          cache-dependency-glob: pyproject.toml
+          cache-dependency-glob: uv.lock
 
       - name: Install docs dependencies
-        run: uv sync --group docs
+        run: uv sync --locked --group docs
 
       - name: Build the Sphinx site with -W
         # `-W` turns warnings into errors so a documentation-time

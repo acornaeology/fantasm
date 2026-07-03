@@ -39,9 +39,10 @@ ENV/
 
 # uv
 .uv/
-# Fantasm is a library as much as an application; consumers resolve
-# their own dependency versions, so uv.lock stays out of git.
-uv.lock
+# uv.lock IS committed: fantasm is primarily a CLI application, so we
+# pin the dev/CI environment for reproducible installs. This does not
+# constrain downstream `pip install fantasm` consumers, who resolve
+# their own versions from the wheel's pyproject metadata.
 
 # Environments / secrets
 .env

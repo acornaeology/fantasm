@@ -22,7 +22,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1",
-    "asyoulikeit>=0.1",
+    "asyoulikeit>=1.4",
     "networkx>=3.0",
 ]
 
@@ -54,13 +54,16 @@ fantasm = "fantasm.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-# Pin the dependency index to canonical PyPI. Belt-and-braces with the
-# .gitignored uv.lock: even if a private-index lockfile were
-# accidentally re-introduced, or a contributor's global uv config
-# pointed elsewhere, `uv sync` resolves from PyPI here. Slightly
-# slower than an internal mirror locally; worth it for CI parity.
-index-url = "https://pypi.org/simple"
+[[tool.uv.index]]
+# Pin the dependency index to canonical PyPI. The committed uv.lock is
+# resolved against this index, so its pinned source URLs are reachable
+# from CI (and any contributor) regardless of a global uv config that
+# points at a private mirror. A project-level default index overrides
+# a globally-configured one, which the legacy ``index-url`` key did
+# not reliably do. Slightly slower than an internal mirror locally;
+# worth it for a portable lockfile.
+url = "https://pypi.org/simple"
+default = true
 
 [tool.hatch.metadata]
 allow-direct-references = true

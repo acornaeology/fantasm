@@ -63,23 +63,27 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache-dependency-glob: pyproject.toml
+          cache-dependency-glob: uv.lock
 
       - name: Install dependency environment (without fantasm itself)
-        # Sync all dev/test deps into the venv but skip installing the
-        # fantasm project. We install it from a freshly built wheel below
-        # so tests exercise the distribution artefact rather than the
-        # source tree.
-        run: uv sync --no-install-project
+        # Sync the exact locked dev/test deps into the venv but skip
+        # installing the fantasm project. We install it from a freshly
+        # built wheel below so tests exercise the distribution artefact
+        # rather than the source tree. --locked fails if uv.lock is out
+        # of sync with pyproject, so CI runs against pinned versions.
+        run: uv sync --locked --no-install-project
 
       - name: Build wheel
         run: uv build
 
       - name: Install the built wheel into the test environment
+        # --no-deps: the locked deps are already synced above, so install
+        # only the wheel itself and leave the pinned versions untouched
+        # (a bare install could otherwise re-resolve a dependency).
         # Force bash so dist/*.whl globs on Windows runners too (default
         # pwsh does not glob the same way).
         shell: bash
-        run: uv pip install dist/*.whl
+        run: uv pip install --no-deps dist/*.whl
 
       - name: Run tests against the installed wheel
         # --no-sync keeps the existing venv (with the wheel-installed
