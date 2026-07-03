@@ -132,6 +132,11 @@ from .promote import (
     analyze_labels,
     load_and_analyze_labels,
 )
+from .references import (
+    reference_addr,
+    reference_addrs,
+    reference_kind,
+)
 from .compare import (
     Instruction,
     RomHeader,
@@ -296,6 +301,9 @@ __all__ = [
     "parse_address",
     "project_rom_prefixes",
     "project_versions_dirpath",
+    "reference_addr",
+    "reference_addrs",
+    "reference_kind",
     "region_for_addr",
     "render_dot",
     "resolve_version_dirpath",

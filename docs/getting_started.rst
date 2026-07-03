@@ -65,7 +65,7 @@ your project's ``pyproject.toml``:
        # Pick whichever disassembler your driver uses. dasmos is the
        # current recommendation; py8dis still works for projects that
        # haven't migrated yet.
-       "dasmos>=1.0",
+       "dasmos>=2.0",
        # ...or, for a py8dis-based driver:
        # "py8dis @ git+https://github.com/acornaeology/py8dis.git",
    ]

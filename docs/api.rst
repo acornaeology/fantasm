@@ -90,6 +90,12 @@ Auto-label classification and rename application
 .. automodule:: fantasm.api.rename_labels
 
 
+Cross-reference field accessors
+-------------------------------
+
+.. automodule:: fantasm.api.references
+
+
 Subroutine-declaration insertion
 --------------------------------
 

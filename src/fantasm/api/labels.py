@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 
+from .references import reference_addrs
+
 
 AUTO_LABEL_RE = re.compile(
     r"^(c[0-9a-f]+|l[0-9a-f]+|loop_c[0-9a-f]+|sub_c[0-9a-f]+)$"
@@ -146,7 +148,7 @@ def classify_labels(
         item_at_label = items_by_addr.get(label_addr)
         ref_addrs_already = {r["addr"] for r in inbound}
         if item_at_label:
-            for ref_addr in item_at_label.get("references", []):
+            for ref_addr in reference_addrs(item_at_label.get("references")):
                 if ref_addr in ref_addrs_already:
                     continue
                 ref_item = items_by_addr.get(ref_addr)
@@ -282,7 +284,7 @@ def inbound_refs_to(
         }
     item_at_addr = items_by_addr.get(addr)
     if item_at_addr:
-        for ref_addr in item_at_addr.get("references", []):
+        for ref_addr in reference_addrs(item_at_addr.get("references")):
             if ref_addr in seen:
                 continue
             ref_item = items_by_addr.get(ref_addr)

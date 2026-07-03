@@ -319,13 +319,24 @@ class TestInboundRefsTo:
         assert [r["mnemonic"] for r in refs] == ["jsr", "jmp"]
 
     def test_data_refs_from_references_field(self) -> None:
+        # dasmos >= 2.0 structured references (schema_version 2).
         items = [
             {"addr": 0x8000, "mnemonic": "lda"},
             {
                 "addr": 0x8100,
                 "mnemonic": "byte",
-                "references": [0x8000],
+                "references": [{"addr": 0x8000, "kind": "direct"}],
             },
+        ]
+        items_by_addr = {it["addr"]: it for it in items}
+        refs = inbound_refs_to(0x8100, items_by_addr, {})
+        assert refs == [{"addr": 0x8000, "mnemonic": "lda"}]
+
+    def test_data_refs_from_pre_2_0_bare_int_references(self) -> None:
+        # Pre-2.0 dasmos emitted bare-int caller addresses; still read.
+        items = [
+            {"addr": 0x8000, "mnemonic": "lda"},
+            {"addr": 0x8100, "mnemonic": "byte", "references": [0x8000]},
         ]
         items_by_addr = {it["addr"]: it for it in items}
         refs = inbound_refs_to(0x8100, items_by_addr, {})
@@ -334,7 +345,11 @@ class TestInboundRefsTo:
     def test_code_flow_wins_over_data_dup(self) -> None:
         items = [
             {"addr": 0x8000, "mnemonic": "jsr", "target": 0x8100},
-            {"addr": 0x8100, "mnemonic": "lda", "references": [0x8000]},
+            {
+                "addr": 0x8100,
+                "mnemonic": "lda",
+                "references": [{"addr": 0x8000, "kind": "direct"}],
+            },
         ]
         items_by_addr = {it["addr"]: it for it in items}
         target_refs = build_target_refs(items)

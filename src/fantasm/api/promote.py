@@ -23,6 +23,8 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from .references import reference_addrs
+
 
 # Mnemonics that unconditionally terminate control flow.
 TERMINAL_MNEMONICS: frozenset[str] = frozenset({"rts", "jmp", "brk", "rti"})
@@ -101,7 +103,7 @@ def analyze_labels(data: dict) -> list[dict]:
         )
 
         sources = ref_sources.get(addr, [])
-        refs_from_json = item.get("references", [])
+        refs_from_json = reference_addrs(item.get("references"))
 
         jsr_refs = sum(
             1 for s in sources if s.get("mnemonic") in CALL_MNEMONICS
