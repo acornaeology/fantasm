@@ -25,7 +25,18 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 
-from .references import reference_addrs
+from .references import reference_addr, reference_addrs, reference_kind
+
+
+#: The ``ReferenceKind`` value dasmos assigns to an indexing-base access
+#: (``lda addr,X`` / ``sta addr,Y`` where the byte touched is ``addr+X``
+#: and the base byte itself is never read or written). A label whose
+#: references are *exclusively* this kind is a ``d.index_base()``
+#: conversion candidate.
+INDEXED_KIND = "indexed"
+
+#: The ``ReferenceKind`` value for a plain ``lda addr`` / ``sta addr``.
+DIRECT_KIND = "direct"
 
 
 AUTO_LABEL_RE = re.compile(
@@ -270,19 +281,31 @@ def inbound_refs_to(
       of the item *at* ``addr`` (table / pointer references the
       disassembler couldn't attribute to a specific instruction).
 
-    Each record carries ``{"addr", "mnemonic"}``. Code-flow refs use
-    the referencing item's mnemonic; data refs use the mnemonic of
-    the item at the referencing address when available, else
-    ``"data_ref"``. Sorted by ``addr``; duplicates (same source addr)
-    are collapsed, with the code-flow record taking precedence.
+    Each record carries ``{"addr", "mnemonic", "kind"}``. Code-flow
+    refs use the referencing item's mnemonic; data refs use the
+    mnemonic of the item at the referencing address when available,
+    else ``"data_ref"``. ``kind`` is the dasmos >= 2.0
+    ``ReferenceKind`` (``direct`` / ``indexed`` / ``pointer`` / …) of
+    the access, joined from the ``references`` field of the item *at*
+    ``addr`` by caller address; it is ``None`` for a caller the
+    schema-v2 ``references`` field does not classify (including any
+    JSON produced by pre-2.0 dasmos, which did not carry kinds).
+    Sorted by ``addr``; duplicates (same source addr) are collapsed,
+    with the code-flow record taking precedence.
     """
+    item_at_addr = items_by_addr.get(addr)
+    kind_by_caller: dict[int, str | None] = {}
+    if item_at_addr:
+        for ref in item_at_addr.get("references") or []:
+            kind_by_caller[reference_addr(ref)] = reference_kind(ref)
+
     seen: dict[int, dict] = {}
     for ref_item in target_refs.get(addr, []):
         seen[ref_item["addr"]] = {
             "addr": ref_item["addr"],
             "mnemonic": ref_item.get("mnemonic", "?"),
+            "kind": kind_by_caller.get(ref_item["addr"]),
         }
-    item_at_addr = items_by_addr.get(addr)
     if item_at_addr:
         for ref_addr in reference_addrs(item_at_addr.get("references")):
             if ref_addr in seen:
@@ -293,7 +316,11 @@ def inbound_refs_to(
                 if ref_item
                 else "data_ref"
             )
-            seen[ref_addr] = {"addr": ref_addr, "mnemonic": mnemonic}
+            seen[ref_addr] = {
+                "addr": ref_addr,
+                "mnemonic": mnemonic,
+                "kind": kind_by_caller.get(ref_addr),
+            }
     return sorted(seen.values(), key=lambda r: r["addr"])
 
 
@@ -301,10 +328,25 @@ def label_inventory(data: dict) -> list[dict]:
     """Build the full label inventory for one disassembly.
 
     Each entry: ``{"name", "addr", "source", "length", "ref_count",
-    "refs"}``. ``length`` is ``len(name)``. ``refs`` is the list
-    returned by :func:`inbound_refs_to` for the label's address;
-    ``ref_count`` is its length, broken out so sorts / filters
-    don't pay the indexing cost.
+    "refs", "direct_count", "indexed_count", "other_count",
+    "is_code", "index_base_only"}``. ``length`` is ``len(name)``.
+    ``refs`` is the list returned by :func:`inbound_refs_to` for the
+    label's address; ``ref_count`` is its length, broken out so sorts
+    / filters don't pay the indexing cost.
+
+    The three per-kind counts split ``refs`` by the dasmos >= 2.0
+    ``ReferenceKind`` of each site: ``direct_count`` (plain
+    ``lda addr``), ``indexed_count`` (indexing-base ``lda addr,X``),
+    and ``other_count`` (every other or unclassified site — pointer
+    references, and any site left ``kind == None`` by pre-2.0 JSON).
+
+    ``is_code`` is true when the item *at* the label's address is a
+    ``type == "code"`` item — the caveat flag for the
+    ``d.index_base()`` workflow, where a genuine code entry point a
+    loop happens to read as ``lda entry,X`` must not be moved off the
+    memory map. ``index_base_only`` is true when the label has at
+    least one reference and *every* one is ``indexed`` — the exact
+    ``d.index_base()`` conversion candidate.
 
     Driver labels are deduped on ``(name, addr)`` (a label can show
     up as both an item label and a sub-label of the parent item);
@@ -332,6 +374,10 @@ def label_inventory(data: dict) -> list[dict]:
                 continue
             seen_driver.add(key)
         refs = refs_for(entry["addr"])
+        kinds = [r["kind"] for r in refs]
+        direct_count = sum(1 for k in kinds if k == DIRECT_KIND)
+        indexed_count = sum(1 for k in kinds if k == INDEXED_KIND)
+        item = items_by_addr.get(entry["addr"])
         results.append(
             {
                 "name": entry["name"],
@@ -340,6 +386,12 @@ def label_inventory(data: dict) -> list[dict]:
                 "length": len(entry["name"]),
                 "ref_count": len(refs),
                 "refs": refs,
+                "direct_count": direct_count,
+                "indexed_count": indexed_count,
+                "other_count": len(kinds) - direct_count - indexed_count,
+                "is_code": bool(item) and item.get("type") == "code",
+                "index_base_only": bool(kinds)
+                and all(k == INDEXED_KIND for k in kinds),
             }
         )
     return results
@@ -348,6 +400,8 @@ def label_inventory(data: dict) -> list[dict]:
 __all__ = [
     "AUTO_LABEL_RE",
     "CATEGORY_ORDER",
+    "DIRECT_KIND",
+    "INDEXED_KIND",
     "LABEL_SOURCES",
     "build_target_refs",
     "classify_labels",

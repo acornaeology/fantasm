@@ -428,6 +428,130 @@ def test_labels_list_sort_by_len_reverse(tmp_path: Path) -> None:
     assert lines[0].split("\t")[0] == "really_long_label_name_for_audit"
 
 
+def _write_index_base_disasm(tmp_path: Path) -> None:
+    """Project with schema-v2 references exercising the kind split.
+
+    ``idx_tbl`` is read only as an indexing base (a pure
+    d.index_base() candidate); ``mixed_tbl`` is read both directly
+    and as an indexing base; ``vector_entry`` is a code item read as
+    an indexing base (the caveat case)."""
+    json_filepath = (
+        tmp_path / "versions" / "demo-1.0" / "output" / "demo-1.0.json"
+    )
+    json_filepath.parent.mkdir(parents=True, exist_ok=True)
+    json_filepath.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "load_addr": 0x8000,
+                    "end_addr": 0x8100,
+                    "schema_version": 2,
+                },
+                "items": [
+                    {"addr": 0x8000, "type": "code", "mnemonic": "lda"},
+                    {"addr": 0x8003, "type": "code", "mnemonic": "lda"},
+                    {
+                        "addr": 0x8080,
+                        "type": "byte",
+                        "mnemonic": "byte",
+                        "labels": ["idx_tbl"],
+                        "references": [{"addr": 0x8000, "kind": "indexed"}],
+                    },
+                    {
+                        "addr": 0x8090,
+                        "type": "byte",
+                        "mnemonic": "byte",
+                        "labels": ["mixed_tbl"],
+                        "references": [
+                            {"addr": 0x8000, "kind": "indexed"},
+                            {"addr": 0x8003, "kind": "direct"},
+                        ],
+                    },
+                    {
+                        "addr": 0x80A0,
+                        "type": "code",
+                        "mnemonic": "rts",
+                        "labels": ["vector_entry"],
+                        "references": [{"addr": 0x8000, "kind": "indexed"}],
+                    },
+                ],
+            }
+        )
+    )
+
+
+def _tsv_rows(output: str) -> list[list[str]]:
+    return [
+        line.split("\t")
+        for line in output.splitlines()
+        if line and not line.startswith("#")
+    ]
+
+
+def test_labels_list_kind_split_columns(tmp_path: Path) -> None:
+    runner = CliRunner()
+    init_project(tmp_path, runner, "demo", "demo")
+    add_version(tmp_path, runner, "1.0", "demo")
+    _write_index_base_disasm(tmp_path)
+
+    result = runner.invoke(
+        main,
+        [
+            "--project-root", str(tmp_path),
+            "labels", "list", "1.0", "--as", "tsv",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # name  addr  source  len  refs  direct  indexed  code
+    rows = {r[0]: r for r in _tsv_rows(result.output)}
+    assert rows["idx_tbl"][4:8] == ["1", "0", "1", ""]
+    assert rows["mixed_tbl"][4:8] == ["2", "1", "1", ""]
+    # Code item read as an index base is flagged.
+    assert rows["vector_entry"][7] == "yes"
+
+
+def test_labels_list_index_base_only_filter(tmp_path: Path) -> None:
+    runner = CliRunner()
+    init_project(tmp_path, runner, "demo", "demo")
+    add_version(tmp_path, runner, "1.0", "demo")
+    _write_index_base_disasm(tmp_path)
+
+    result = runner.invoke(
+        main,
+        [
+            "--project-root", str(tmp_path),
+            "labels", "list", "1.0", "--index-base-only",
+            "--as", "tsv",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    names = {r[0] for r in _tsv_rows(result.output)}
+    # Pure index-base candidates only; mixed_tbl has a direct read.
+    assert names == {"idx_tbl", "vector_entry"}
+    assert "mixed_tbl" not in names
+
+
+def test_labels_list_sort_by_idx(tmp_path: Path) -> None:
+    runner = CliRunner()
+    init_project(tmp_path, runner, "demo", "demo")
+    add_version(tmp_path, runner, "1.0", "demo")
+    _write_index_base_disasm(tmp_path)
+
+    result = runner.invoke(
+        main,
+        [
+            "--project-root", str(tmp_path),
+            "labels", "list", "1.0", "--sort", "idx", "--reverse",
+            "--as", "tsv",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    rows = _tsv_rows(result.output)
+    # Highest indexed count first (all the ,X readers of &8000).
+    assert rows[0][0] in {"idx_tbl", "mixed_tbl", "vector_entry"}
+    assert rows[0][6] == "1"
+
+
 # --- labels refs --------------------------------------------------
 
 

@@ -31,6 +31,7 @@ from ..api.rename_labels import (
 )
 from ..cli_helpers import analysis_context
 from ._options import (
+    label_index_base_only_option,
     label_match_option,
     label_max_length_option,
     label_min_length_option,
@@ -45,6 +46,8 @@ _LABEL_SORT_KEYS: dict[str, callable] = {
     "addr": lambda r: (r["addr"], r["name"]),
     "len": lambda r: (r["length"], r["name"]),
     "refs": lambda r: (r["ref_count"], r["name"]),
+    "direct": lambda r: (r["direct_count"], r["name"]),
+    "idx": lambda r: (r["indexed_count"], r["name"]),
 }
 
 
@@ -255,9 +258,20 @@ def labels_apply(
     help=(
         "Inventory every label declared in a version's disassembly. "
         "By default shows name, address, source (driver vs env), "
-        "length, and inbound reference count. Filter with --match / "
-        "--min-length / --max-length / --source; sort with --sort / "
-        "--reverse."
+        "length, inbound reference count, and — from dasmos >= 2.0 "
+        "schema-v2 JSON — the direct vs indexing-base split of those "
+        "references plus a code-item caveat flag. Filter with --match "
+        "/ --min-length / --max-length / --source / --index-base-only; "
+        "sort with --sort / --reverse.\n"
+        "\n"
+        "The Direct column counts plain `lda addr` references and Idx "
+        "counts indexing-base `lda addr,X` references; a label whose "
+        "references are exclusively indexing-base (Idx == Refs, Direct "
+        "== 0) is a `d.index_base()` conversion candidate, listed on "
+        "its own with --index-base-only. The Code column flags "
+        "candidates whose address is a code item (a genuine entry "
+        "point a loop happens to read as `lda entry,X`) so they can be "
+        "excluded from conversion."
     ),
 )
 @click.argument("version_id")
@@ -267,6 +281,7 @@ def labels_apply(
 @label_max_length_option
 @label_match_option
 @label_source_option
+@label_index_base_only_option
 @report_output(reports={"labels": "Label inventory"})
 def labels_list(
     version_id: str,
@@ -276,6 +291,7 @@ def labels_list(
     max_length: int | None,
     match_pattern: str | None,
     source: str,
+    index_base_only: bool,
 ) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
     inventory = label_inventory(actx.data)
@@ -296,6 +312,8 @@ def labels_list(
         inventory = [r for r in inventory if r["length"] <= max_length]
     if pattern is not None:
         inventory = [r for r in inventory if pattern.search(r["name"])]
+    if index_base_only:
+        inventory = [r for r in inventory if r["index_base_only"]]
 
     inventory.sort(key=_LABEL_SORT_KEYS[sort_key.lower()], reverse=reverse)
 
@@ -308,6 +326,8 @@ def labels_list(
         description_parts.append(f"max-length={max_length}")
     if match_pattern is not None:
         description_parts.append(f"match={match_pattern!r}")
+    if index_base_only:
+        description_parts.append("index-base-only")
 
     table = (
         TableContent(
@@ -319,6 +339,9 @@ def labels_list(
         .add_column("source", "Source")
         .add_column("length", "Len")
         .add_column("refs", "Refs")
+        .add_column("direct", "Direct")
+        .add_column("indexed", "Idx")
+        .add_column("code", "Code")
     )
     for record in inventory:
         table.add_row(
@@ -327,6 +350,9 @@ def labels_list(
             source=record["source"],
             length=str(record["length"]),
             refs=str(record["ref_count"]),
+            direct=str(record["direct_count"]),
+            indexed=str(record["indexed_count"]),
+            code="yes" if record["is_code"] else "",
         )
     return Reports(labels=Report(data=table))
 

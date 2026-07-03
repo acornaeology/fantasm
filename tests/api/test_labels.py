@@ -317,6 +317,8 @@ class TestInboundRefsTo:
         refs = inbound_refs_to(0x8100, items_by_addr, target_refs)
         assert [r["addr"] for r in refs] == [0x8000, 0x8200]
         assert [r["mnemonic"] for r in refs] == ["jsr", "jmp"]
+        # No references field at the target, so kind is unknown.
+        assert [r["kind"] for r in refs] == [None, None]
 
     def test_data_refs_from_references_field(self) -> None:
         # dasmos >= 2.0 structured references (schema_version 2).
@@ -330,7 +332,9 @@ class TestInboundRefsTo:
         ]
         items_by_addr = {it["addr"]: it for it in items}
         refs = inbound_refs_to(0x8100, items_by_addr, {})
-        assert refs == [{"addr": 0x8000, "mnemonic": "lda"}]
+        assert refs == [
+            {"addr": 0x8000, "mnemonic": "lda", "kind": "direct"}
+        ]
 
     def test_data_refs_from_pre_2_0_bare_int_references(self) -> None:
         # Pre-2.0 dasmos emitted bare-int caller addresses; still read.
@@ -340,7 +344,8 @@ class TestInboundRefsTo:
         ]
         items_by_addr = {it["addr"]: it for it in items}
         refs = inbound_refs_to(0x8100, items_by_addr, {})
-        assert refs == [{"addr": 0x8000, "mnemonic": "lda"}]
+        # Bare-int schema carries no kind.
+        assert refs == [{"addr": 0x8000, "mnemonic": "lda", "kind": None}]
 
     def test_code_flow_wins_over_data_dup(self) -> None:
         items = [
@@ -354,7 +359,11 @@ class TestInboundRefsTo:
         items_by_addr = {it["addr"]: it for it in items}
         target_refs = build_target_refs(items)
         refs = inbound_refs_to(0x8100, items_by_addr, target_refs)
-        assert refs == [{"addr": 0x8000, "mnemonic": "jsr"}]
+        # Code-flow record wins the mnemonic; kind still joins from the
+        # references field by caller address.
+        assert refs == [
+            {"addr": 0x8000, "mnemonic": "jsr", "kind": "direct"}
+        ]
 
 
 # --- label_inventory -----------------------------------------------
@@ -398,3 +407,89 @@ class TestLabelInventory:
         inventory = label_inventory(data)
         assert len(inventory) == 1
         assert inventory[0]["name"] == "main"
+
+    def test_kind_split_and_index_base_only(self) -> None:
+        # A data label read only via indexing base (lda tbl,X) is a
+        # pure d.index_base() candidate; one with a direct read too is
+        # not. Env label with no refs is neither.
+        data = {
+            "items": [
+                {"addr": 0x8000, "mnemonic": "lda"},
+                {"addr": 0x8010, "mnemonic": "lda"},
+                {
+                    "addr": 0x8100,
+                    "mnemonic": "byte",
+                    "type": "byte",
+                    "labels": ["pure_tbl"],
+                    "references": [{"addr": 0x8000, "kind": "indexed"}],
+                },
+                {
+                    "addr": 0x8200,
+                    "mnemonic": "byte",
+                    "type": "byte",
+                    "labels": ["mixed_tbl"],
+                    "references": [
+                        {"addr": 0x8000, "kind": "indexed"},
+                        {"addr": 0x8010, "kind": "direct"},
+                    ],
+                },
+            ],
+            "external_labels": {"oswrch": 0xFFEE},
+        }
+        by_name = {r["name"]: r for r in label_inventory(data)}
+
+        pure = by_name["pure_tbl"]
+        assert (pure["direct_count"], pure["indexed_count"]) == (0, 1)
+        assert pure["other_count"] == 0
+        assert pure["index_base_only"] is True
+        assert pure["is_code"] is False
+
+        mixed = by_name["mixed_tbl"]
+        assert (mixed["direct_count"], mixed["indexed_count"]) == (1, 1)
+        assert mixed["index_base_only"] is False
+
+        # No references → not a candidate, even though vacuously
+        # "all indexed".
+        assert by_name["oswrch"]["index_base_only"] is False
+
+    def test_code_item_caveat_flagged(self) -> None:
+        # A genuine code entry point read as `lda entry,X` is index-
+        # base-only but must be flagged is_code so it is excluded.
+        data = {
+            "items": [
+                {"addr": 0x8000, "mnemonic": "lda"},
+                {
+                    "addr": 0x8100,
+                    "mnemonic": "rts",
+                    "type": "code",
+                    "labels": ["entry"],
+                    "references": [{"addr": 0x8000, "kind": "indexed"}],
+                },
+            ]
+        }
+        entry = {r["name"]: r for r in label_inventory(data)}["entry"]
+        assert entry["index_base_only"] is True
+        assert entry["is_code"] is True
+
+    def test_other_count_covers_pointer_and_unknown(self) -> None:
+        data = {
+            "items": [
+                {"addr": 0x8000, "mnemonic": "lda"},
+                {"addr": 0x8010, "mnemonic": "lda"},
+                {
+                    "addr": 0x8100,
+                    "mnemonic": "word",
+                    "type": "word",
+                    "labels": ["vec"],
+                    "references": [
+                        {"addr": 0x8000, "kind": "pointer"},
+                        {"addr": 0x8010},
+                    ],
+                },
+            ]
+        }
+        vec = {r["name"]: r for r in label_inventory(data)}["vec"]
+        assert vec["ref_count"] == 2
+        assert (vec["direct_count"], vec["indexed_count"]) == (0, 0)
+        assert vec["other_count"] == 2
+        assert vec["index_base_only"] is False

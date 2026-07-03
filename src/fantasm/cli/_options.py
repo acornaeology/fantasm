@@ -29,7 +29,7 @@ rom_base_option = click.option(
 )
 
 
-LABEL_SORT_KEYS = ("name", "addr", "len", "refs")
+LABEL_SORT_KEYS = ("name", "addr", "len", "refs", "direct", "idx")
 
 
 label_sort_option = click.option(
@@ -66,6 +66,16 @@ label_match_option = click.option(
     "match_pattern",
     default=None,
     help="Only labels whose name matches this regular expression.",
+)
+
+label_index_base_only_option = click.option(
+    "--index-base-only",
+    is_flag=True,
+    help=(
+        "Only labels whose references are exclusively indexing-base "
+        "accesses (lda addr,X / sta addr,Y) — the d.index_base() "
+        "conversion candidates. Labels with no references are excluded."
+    ),
 )
 
 label_source_option = click.option(
