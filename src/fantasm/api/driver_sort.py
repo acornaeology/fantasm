@@ -29,6 +29,35 @@ per-anchor heuristics.
   indented block precedes ``ir = d.disassemble()``.
 - ``ir = d.disassemble()`` precedes every subsequent statement
   (renders, file IO, prints).
+- **Module-level name dependencies.** For every module-scope name,
+  a statement that *writes* it precedes later statements that
+  *read* or *write* it, and a statement that *reads* it precedes a
+  later statement that *writes* it (RAW / WAR / WAW). Read-after-read
+  is free, so the ``d`` receiver — written once, read by every
+  ``d.X(…)`` call — never orders annotations relative to each other.
+  This edge is what keeps an accumulator setup (``addr = 0x8579``)
+  ahead of the ``for`` / ``while`` loop that consumes and reassigns
+  ``addr``, and keeps a ``def`` ahead of the statement that calls it.
+
+## Computed setup-assigns
+
+A module-level assignment is normally ``setup`` (keyed ``-inf``,
+pinned to the top). But an assignment whose value reads a name
+produced *only* by a non-setup statement — e.g. ``ENTRIES =
+_parse(…)`` calling a module-level ``def`` — is **demoted** to a
+soft anchor so the name edge from the ``def`` can order it after
+its definition. Pure-literal / constant assigns (``addr = 0x8579``,
+``_table = [...]``, ``TOP = BASE + 0x100``) read no such name and
+stay at the top.
+
+## Unsortable inputs
+
+Name edges can, in pathological inputs, close a cycle with the
+setup / render edges. When the DAG is cyclic there is no valid
+canonical order, so the sort is a **no-op**: ``sort_driver_text``
+returns the input unchanged and ``is_sorted`` reports ``True``.
+This guarantees the sort never changes whether the driver runs to
+completion.
 
 ## Tiebreak (sort key for free choices)
 
@@ -157,6 +186,12 @@ class _Statement:
     # the block can never sort earlier than any move whose range
     # *might* overlap. Ignored for non-block kinds.
     coverage_known: bool = True
+    # Module-scope names this statement reads / writes. Drive the
+    # data-dependency edges (RAW / WAR / WAW) that keep an accumulator
+    # setup ahead of its consumer loop and a ``def`` ahead of its
+    # caller. Populated in :func:`_parse_statements` from the AST node.
+    reads: frozenset[str] = frozenset()
+    writes: frozenset[str] = frozenset()
     leading_lines: list[str] = field(default_factory=list)
     statement_lines: list[str] = field(default_factory=list)
     trailing_lines: list[str] = field(default_factory=list)
@@ -391,6 +426,144 @@ def _block_coverage(
                 if lit is not None:
                     return lit, ((lit, lit + 1),), False
     return None, (), False
+
+
+def _collect_expr_names(
+    node: ast.AST, reads: set[str], writes: set[str]
+) -> None:
+    """Collect Load names as reads and walrus targets as writes from an expression.
+
+    ``ast.walk`` over an expression subtree. Any ``Name`` in ``Load``
+    context is a read; a walrus ``(x := …)`` binds ``x`` in the
+    enclosing (module) scope, so its target is a write. Names bound
+    by comprehensions or lambdas inside the expression have their own
+    scope, but treating an incidental such ``Load`` as a module read
+    is safe — it only ever adds edges.
+    """
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+            reads.add(child.id)
+        elif isinstance(child, ast.NamedExpr) and isinstance(
+            child.target, ast.Name
+        ):
+            writes.add(child.target.id)
+
+
+def _collect_target(
+    target: ast.AST, reads: set[str], writes: set[str]
+) -> None:
+    """Collect the module-scope names bound by an assignment target.
+
+    ``Name`` targets bind; ``Tuple`` / ``List`` / ``Starred`` recurse;
+    ``Attribute`` / ``Subscript`` targets *mutate* an existing object
+    rather than rebind a name, so their base expression is a read.
+    """
+    if isinstance(target, ast.Name):
+        writes.add(target.id)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            _collect_target(elt, reads, writes)
+    elif isinstance(target, ast.Starred):
+        _collect_target(target.value, reads, writes)
+    else:  # Attribute / Subscript — mutation, base is read.
+        _collect_expr_names(target, reads, writes)
+
+
+def _walk_module_scope(
+    node: ast.AST, reads: set[str], writes: set[str]
+) -> None:
+    """Accumulate module-scope reads / writes of one statement.
+
+    Recurses through constructs that execute at module scope
+    (``For`` / ``While`` / ``If`` / ``With`` / ``Try`` and their
+    nested bodies), but *not* into ``def`` / ``class`` bodies —
+    those introduce their own scope. A ``def`` / ``class`` binds its
+    name (a write) and evaluates its decorators, defaults and
+    annotations at module scope (reads).
+    """
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            writes.add((alias.asname or alias.name).split(".")[0])
+    elif isinstance(node, ast.ImportFrom):
+        for alias in node.names:
+            if alias.name != "*":
+                writes.add(alias.asname or alias.name)
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        writes.add(node.name)
+        for dec in node.decorator_list:
+            _collect_expr_names(dec, reads, writes)
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                _collect_expr_names(base, reads, writes)
+            for kw in node.keywords:
+                _collect_expr_names(kw.value, reads, writes)
+        else:
+            args = node.args
+            for default in (*args.defaults, *args.kw_defaults):
+                if default is not None:
+                    _collect_expr_names(default, reads, writes)
+            for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                        args.vararg, args.kwarg):
+                if arg is not None and arg.annotation is not None:
+                    _collect_expr_names(arg.annotation, reads, writes)
+            if node.returns is not None:
+                _collect_expr_names(node.returns, reads, writes)
+        # Body is a separate scope — not walked.
+    elif isinstance(node, ast.Assign):
+        for target in node.targets:
+            _collect_target(target, reads, writes)
+        _collect_expr_names(node.value, reads, writes)
+    elif isinstance(node, ast.AnnAssign):
+        _collect_target(node.target, reads, writes)
+        _collect_expr_names(node.annotation, reads, writes)
+        if node.value is not None:
+            _collect_expr_names(node.value, reads, writes)
+    elif isinstance(node, ast.AugAssign):
+        # ``x += 1`` reads and writes ``x``.
+        if isinstance(node.target, ast.Name):
+            reads.add(node.target.id)
+        _collect_target(node.target, reads, writes)
+        _collect_expr_names(node.value, reads, writes)
+    elif isinstance(node, ast.Delete):
+        for target in node.targets:
+            _collect_target(target, reads, writes)
+    elif isinstance(node, (ast.For, ast.AsyncFor)):
+        _collect_target(node.target, reads, writes)
+        _collect_expr_names(node.iter, reads, writes)
+        for child in (*node.body, *node.orelse):
+            _walk_module_scope(child, reads, writes)
+    elif isinstance(node, (ast.While, ast.If)):
+        _collect_expr_names(node.test, reads, writes)
+        for child in (*node.body, *node.orelse):
+            _walk_module_scope(child, reads, writes)
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        for item in node.items:
+            _collect_expr_names(item.context_expr, reads, writes)
+            if item.optional_vars is not None:
+                _collect_target(item.optional_vars, reads, writes)
+        for child in node.body:
+            _walk_module_scope(child, reads, writes)
+    elif isinstance(node, ast.Try):
+        for handler in node.handlers:
+            if handler.type is not None:
+                _collect_expr_names(handler.type, reads, writes)
+            if handler.name is not None:
+                writes.add(handler.name)
+            for child in handler.body:
+                _walk_module_scope(child, reads, writes)
+        for child in (*node.body, *node.orelse, *node.finalbody):
+            _walk_module_scope(child, reads, writes)
+    else:
+        # Expr, Return, Assert, Raise, bare calls, etc. — reads only.
+        _collect_expr_names(node, reads, writes)
+
+
+def _name_deps(node: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+    """Return ``(reads, writes)`` of module-scope names for one statement."""
+    reads: set[str] = set()
+    writes: set[str] = set()
+    _walk_module_scope(node, reads, writes)
+    return frozenset(reads), frozenset(writes)
 
 
 def _is_render_start(node: ast.AST) -> bool:
@@ -653,6 +826,7 @@ def _parse_statements(text: str) -> list[_Statement]:
                 node, original_index=index, assigns=module_assigns
             )
 
+        stmt.reads, stmt.writes = _name_deps(node)
         stmt.leading_lines = leading_for_next
         stmt.statement_lines = lines[start_lineno - 1:end_lineno]
         statements.append(stmt)
@@ -679,8 +853,43 @@ def _parse_statements(text: str) -> list[_Statement]:
             else:
                 break
 
+    _demote_computed_setup_assigns(statements)
     _resolve_soft_anchor_keys(statements)
     return statements
+
+
+def _demote_computed_setup_assigns(statements: list[_Statement]) -> None:
+    """In-place: reclassify setup assigns that depend on non-setup output.
+
+    A ``setup_assign`` is normally pinned to the top (``-inf``). But
+    an assignment such as ``ENTRIES = _parse(…)`` whose value reads a
+    name produced *only* by a non-setup statement (here a module-level
+    ``def``) must sort *after* that producer. Leaving it as top-pinned
+    setup would both misorder it and — combined with the ``def →
+    assignment`` name edge — close a cycle. Demote it to a soft anchor
+    so it inherits its neighbour's key and the name edge orders it.
+
+    A name written by any setup statement is "setup-available"; only
+    reads of names written *exclusively* by non-setup statements
+    trigger demotion. Pure-literal assigns (``addr = 0x8579``,
+    ``_table = [...]``) read no such name and stay at the top.
+    """
+    setup_writes: set[str] = set()
+    nonsetup_writes: set[str] = set()
+    for s in statements:
+        if s.kind.startswith("setup_"):
+            setup_writes |= s.writes
+        elif s.kind not in ("render_start", "render_prelude", "render_tail"):
+            nonsetup_writes |= s.writes
+    demotable = nonsetup_writes - setup_writes
+    if not demotable:
+        return
+    for s in statements:
+        if s.kind == "setup_assign" and (s.reads & demotable):
+            s.kind = "soft_anchor"
+            s.sort_key = math.nan
+            s.address = None
+            s.addr_ranges = ()
 
 
 # --- Topological sort with address tiebreak -----------------------
@@ -800,13 +1009,48 @@ def _build_graph(
         for v in render_tail_indices:
             add_edge(render_start_idx, v)
 
+    # 5. Module-level name dependencies. For each name, walk the
+    # statements that touch it in original order and add RAW / WAR /
+    # WAW edges; read-after-read adds none. This keeps a write-then-
+    # read/write chain (an accumulator setup ahead of its consumer
+    # loop; a ``def`` ahead of its caller) in a valid execution order
+    # without freezing read-only relationships like the ``d`` receiver.
+    touchers: dict[str, list[int]] = {}
+    for i, s in enumerate(statements):
+        for name in s.reads | s.writes:
+            touchers.setdefault(name, []).append(i)
+    for name, indices in touchers.items():
+        last_writer: int | None = None
+        readers_since: list[int] = []
+        for i in indices:  # already in ascending original order
+            s = statements[i]
+            reads_it = name in s.reads
+            writes_it = name in s.writes
+            if reads_it:
+                if last_writer is not None:
+                    add_edge(last_writer, i)  # RAW
+                readers_since.append(i)
+            if writes_it:
+                for r in readers_since:
+                    add_edge(r, i)  # WAR
+                if last_writer is not None:
+                    add_edge(last_writer, i)  # WAW
+                last_writer = i
+                readers_since = []
+
     return successors, in_degree
 
 
 def _topo_sort(
     statements: Sequence[_Statement],
-) -> list[_Statement]:
-    """Kahn's algorithm with address-keyed priority queue."""
+) -> list[_Statement] | None:
+    """Kahn's algorithm with address-keyed priority queue.
+
+    Returns the sorted statements, or ``None`` when the dependency
+    graph is cyclic (no valid canonical order exists). Name edges can
+    close a cycle with the setup / render edges on pathological input;
+    callers treat ``None`` as "leave the file unchanged".
+    """
     successors, in_degree = _build_graph(statements)
 
     def key_for(idx: int) -> tuple[float, int, int]:
@@ -828,13 +1072,7 @@ def _topo_sort(
                 heapq.heappush(heap, key_for(v))
 
     if len(out) != len(statements):
-        # Should not happen — the graph we build is acyclic by
-        # construction. Defensive fallback: append remaining items
-        # in original order.
-        seen = {id(s) for s in out}
-        for s in statements:
-            if id(s) not in seen:
-                out.append(s)
+        return None  # cyclic — unsortable
     return out
 
 
@@ -867,6 +1105,8 @@ def sort_driver_text(text: str) -> str:
         return text
     statements = _parse_statements(text)
     sorted_statements = _topo_sort(statements)
+    if sorted_statements is None:
+        return text  # unsortable (cyclic dependencies) — no-op
     out = emit_units([s.to_unit() for s in sorted_statements])
     if text.endswith("\n"):
         out += "\n"
@@ -884,6 +1124,8 @@ def is_sorted(text: str) -> bool:
         return True
     statements = _parse_statements(text)
     sorted_statements = _topo_sort(statements)
+    if sorted_statements is None:
+        return True  # unsortable — sort is a no-op, so already "sorted"
     return [s.original_index for s in sorted_statements] == list(
         range(len(statements))
     )

@@ -438,6 +438,119 @@ class TestCanonicalOrdering:
         assert once == twice
 
 
+# --- module-level name / data dependencies (issue #15) ------------
+
+
+class TestNameDependencies:
+    """The sort must not break intra-module name / data flow.
+
+    A statement that writes a module-level name must precede later
+    statements that read or reassign it; read-only relationships (the
+    ``d`` receiver) stay free. See issue #15.
+    """
+
+    def _order(self, text: str) -> list[str]:
+        return [ln for ln in sort_driver_text(text).splitlines() if ln.strip()]
+
+    def test_accumulator_setup_precedes_its_consumer_loop(self) -> None:
+        # Case A: ``addr = 0x8579`` initialises a free variable that the
+        # loop reads and reassigns. The assignment must stay ahead of
+        # the loop even though intervening annotations sort between them.
+        text = (
+            "d.label(0x8000, 'header')\n"
+            "addr = 0x8579\n"
+            "for _ in range(7):\n"
+            "    d.byte(addr, 1)\n"
+            "    addr = d.stringz(addr + 1)\n"
+            "d.label(0x8100, 'mid')\n"
+        )
+        order = self._order(text)
+        i_setup = order.index("addr = 0x8579")
+        i_loop = order.index("for _ in range(7):")
+        assert i_setup < i_loop
+
+    def test_no_other_writer_falls_between_setup_and_consumer(self) -> None:
+        # The consumer loop is anchored high (body literal 0x9000); a
+        # competing ``addr`` writer is anchored low (0x8000). Only the
+        # name edge stops the low writer sorting between the setup and
+        # the consumer — which is exactly the #15 corruption.
+        text = (
+            "addr = 0x8579\n"
+            "for _ in range(7):\n"
+            "    d.byte(0x9000)\n"
+            "    d.byte(addr, 1)\n"
+            "    addr = d.stringz(addr + 1)\n"
+            "for addr in range(0x8000, 0x8002):\n"
+            "    d.byte(addr)\n"
+        )
+        order = self._order(text)
+        i_setup = order.index("addr = 0x8579")
+        i_consumer = order.index("for _ in range(7):")
+        i_other = order.index("for addr in range(0x8000, 0x8002):")
+        assert i_setup < i_consumer < i_other
+
+    def test_while_accumulator_setup_precedes_loop(self) -> None:
+        # Case B(a): the ``while`` variant of the free-variable loop.
+        text = (
+            "d.label(0x8000, 'header')\n"
+            "_kw = 0x8071\n"
+            "while _kw < 0x8100:\n"
+            "    _kw = d.string(_kw)\n"
+            "d.label(0x8200, 'tail')\n"
+        )
+        order = self._order(text)
+        assert order.index("_kw = 0x8071") < order.index("while _kw < 0x8100:")
+
+    def test_def_precedes_its_module_level_caller(self) -> None:
+        # Case B(b): a module-level ``def`` used by an assignment must
+        # not sort after the call site (would be a NameError). The file
+        # must still sort — not fall back to a no-op.
+        text = (
+            "d.label(0x9000, 'tail')\n"
+            "def _parse(rom, start, end):\n"
+            "    return []\n"
+            "ENTRIES = _parse(_rom, 0x8071, 0x8100)\n"
+            "d.label(0x8000, 'header')\n"
+        )
+        order = self._order(text)
+        i_def = order.index("def _parse(rom, start, end):")
+        i_call = order.index("ENTRIES = _parse(_rom, 0x8071, 0x8100)")
+        assert i_def < i_call
+        # And the annotations still sorted by address around them.
+        assert order.index("d.label(0x8000, 'header')") < order.index(
+            "d.label(0x9000, 'tail')"
+        )
+
+    def test_shared_receiver_reads_do_not_freeze_the_sort(self) -> None:
+        # Every ``d.X(…)`` reads ``d``, but read-after-read is not a
+        # dependency — the annotations must still reorder by address.
+        text = (
+            "d = dasmos.Disassembler.create(cpu='6502')\n"
+            "d.label(0x9000, 'high')\n"
+            "d.label(0x8000, 'low')\n"
+        )
+        order = self._order(text)
+        assert order.index("d.label(0x8000, 'low')") < order.index(
+            "d.label(0x9000, 'high')"
+        )
+
+    def test_cyclic_dependencies_leave_file_unchanged(self) -> None:
+        # A non-setup loop writes ``rom_path``, which the setup
+        # ``d.load(…)`` reads — this closes a cycle with the
+        # setup→non-setup edge. No valid canonical order exists, so the
+        # sort is a no-op and ``is_sorted`` reports True.
+        text = (
+            "d = dasmos.Disassembler.create(cpu='6502')\n"
+            "for _ in range(1):\n"
+            "    rom_path = 'rom.bin'\n"
+            "d.load(rom_path, 0x8000)\n"
+            "d.label(0x9000, 'x')\n"
+            "d.label(0x8000, 'y')\n"
+        )
+        assert sort_driver_text(text) == text
+        assert is_sorted(text) is True
+
+
 # --- semantic equivalence round-trip ------------------------------
 
 
@@ -485,6 +598,21 @@ class TestSemanticEquivalence:
             "for i in range(3):\n"
             "    d.byte(0x8000 + i)\n"
             'd.label(0x8000, "after")\n'
+        )
+        before = self._stmt_multiset(text)
+        sorted_text = sort_driver_text(text)
+        after = self._stmt_multiset(sorted_text)
+        assert before == after
+
+    def test_accumulator_loop_round_trip(self) -> None:
+        # The free-variable accumulator pattern (issue #15) is a
+        # permutation like any other — no statement dropped or mangled.
+        text = (
+            "addr = 0x8579\n"
+            "for _ in range(7):\n"
+            "    d.byte(addr, 1)\n"
+            "    addr = d.stringz(addr + 1)\n"
+            'd.label(0x8000, "header")\n'
         )
         before = self._stmt_multiset(text)
         sorted_text = sort_driver_text(text)
