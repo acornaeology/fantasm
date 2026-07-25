@@ -151,6 +151,81 @@ def valid_addresses_from_data(data: dict) -> set[int]:
     return addresses
 
 
+def valid_label_names_from_data(data: dict) -> set[str]:
+    """Return every label name the disassembly defines, for validating
+    ``label:NAME`` references.
+
+    Mirrors the site generator's ``build_label_addrs`` name set so a
+    ``label:`` the linter accepts is exactly one the generator can
+    resolve: item labels, item sub-labels, subroutine names, memory-map
+    and index-base names, and external-label names.
+    """
+    names: set[str] = set()
+    for entry in data.get("memory_map", []):
+        if entry.get("name"):
+            names.add(entry["name"])
+    for entry in data.get("index_bases", []):
+        if entry.get("name"):
+            names.add(entry["name"])
+    for sub in data.get("subroutines", []):
+        if sub.get("name"):
+            names.add(sub["name"])
+    ext = data.get("external_labels") or {}
+    if isinstance(ext, dict):
+        names.update(ext)
+    for item in data.get("items", []):
+        names.update(item.get("labels", []))
+        for sub_names in item.get("sub_labels", {}).values():
+            names.update(sub_names)
+    return names
+
+
+_GLOSSARY_HEADING_RE = re.compile(r"^\*\*(.+?)\*\*(?:\s*\((.+?)\))?\s*$", re.M)
+
+
+def _slugify(text: str) -> str:
+    """URL-friendly slug — must match the site generator's ``_slugify``."""
+    return re.sub(r"[^a-z0-9-]", "", text.lower().replace(" ", "-"))
+
+
+def glossary_slugs_from_markdown(md_text: str) -> set[str]:
+    """Parse ``GLOSSARY.md`` and return the set of term slugs, for
+    validating ``glossary:SLUG`` references."""
+    return {
+        _slugify(m.group(1)) for m in _GLOSSARY_HEADING_RE.finditer(md_text)
+    }
+
+
+# Inline scheme links in Markdown / driver comment text:
+# ``](label:NAME[@version][?flag])`` and ``](glossary:SLUG)``.
+_INLINE_SCHEME_LINK_RE = re.compile(r"\]\((label|glossary):([^)\s]+)\)")
+
+
+def find_inline_scheme_links(text: str) -> list[dict]:
+    """Extract every inline ``label:`` / ``glossary:`` link in ``text``.
+
+    Each result is ``{"scheme", "target", "name", "line_number"}`` where
+    ``name`` is the bare label name (``@version`` / ``?flag`` stripped)
+    for a ``label:`` link, or the lower-cased slug for a ``glossary:``
+    link.
+    """
+    results: list[dict] = []
+    for m in _INLINE_SCHEME_LINK_RE.finditer(text):
+        scheme, target = m.group(1), m.group(2)
+        if scheme == "label":
+            name = re.split(r"[@?]", target, maxsplit=1)[0]
+        else:
+            name = target.lower()
+        line_number = text.count("\n", 0, m.start()) + 1
+        results.append({
+            "scheme": scheme,
+            "target": target,
+            "name": name,
+            "line_number": line_number,
+        })
+    return results
+
+
 def address_ranges_from_data(
     data: dict,
     *,
@@ -294,9 +369,12 @@ __all__ = [
     "address_ranges_from_data",
     "extract_annotations",
     "find_code_block_ranges",
+    "find_inline_scheme_links",
     "find_nth_occurrence",
+    "glossary_slugs_from_markdown",
     "load_address_ranges",
     "load_valid_addresses",
     "offset_in_code_block",
     "valid_addresses_from_data",
+    "valid_label_names_from_data",
 ]

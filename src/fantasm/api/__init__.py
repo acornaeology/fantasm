@@ -195,11 +195,14 @@ from .lint import (
     address_ranges_from_data,
     extract_annotations,
     find_code_block_ranges,
+    find_inline_scheme_links,
     find_nth_occurrence,
+    glossary_slugs_from_markdown,
     load_address_ranges,
     load_valid_addresses,
     offset_in_code_block,
     valid_addresses_from_data,
+    valid_label_names_from_data,
 )
 from .insert_point import (
     AlreadyDeclared,
