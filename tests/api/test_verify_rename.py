@@ -187,6 +187,54 @@ class TestVerifyResultDataclass:
 # by the missing-file/missing-beebasm error paths above.
 
 
+class TestRealBeebasmIncbin:
+    """Round-trip a listing whose payload lives beside it via ``incbin``.
+
+    Characterises the fix for #20: beebasm must run from the listing's
+    directory so a bare ``incbin "name.dat"`` (as dasmos emits alongside
+    ``ir.write_included_binaries()``) resolves against the payload next
+    to the listing, regardless of fantasm's invocation directory.
+    """
+
+    def test_incbin_payload_resolves_from_listing_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        beebasm_filepath: Path,
+    ) -> None:
+        output_dirpath = tmp_path / "output"
+        output_dirpath.mkdir()
+
+        payload = b"\x01\x02\x03\x04\x05\x06"
+        (output_dirpath / "payload.dat").write_bytes(payload)
+        (output_dirpath / "keypad.asm").write_text(
+            "ORG &1900\n"
+            "GUARD &8000\n"
+            ".pydis_start\n"
+            '    incbin "payload.dat"\n'
+            ".pydis_end\n"
+            "SAVE pydis_start, pydis_end\n"
+        )
+        rom_filepath = tmp_path / "keypad.rom"
+        rom_filepath.write_bytes(payload)
+
+        # Invoke from somewhere other than the listing's directory, so a
+        # missing cwd= would make the relative incbin fail to resolve.
+        run_dirpath = tmp_path / "elsewhere"
+        run_dirpath.mkdir()
+        monkeypatch.chdir(run_dirpath)
+
+        result = verify_round_trip(
+            rom_filepath,
+            output_dirpath / "keypad.asm",
+            beebasm_filepath=beebasm_filepath,
+        )
+
+        assert result.beebasm_returncode == 0, result.beebasm_stderr
+        assert result.matched is True
+        assert result.assembled_size == len(payload)
+
+
 # --- Sub-banked ROM trailing-slice -------------------------------
 
 
@@ -271,6 +319,44 @@ class TestSubBankedRomSlicing:
         assert result.rom_size == 2
         assert result.compared_size == 2
         assert result.assembled_size == 4
+
+    def test_beebasm_runs_from_listing_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # beebasm's relative file directives (INCBIN/PUTFILE/PUTBASIC)
+        # resolve against its working directory, so it must be run from
+        # the listing's own directory — not fantasm's invocation dir.
+        output_dirpath = tmp_path / "output"
+        output_dirpath.mkdir()
+        rom_filepath = output_dirpath / "rom.bin"
+        asm_filepath = output_dirpath / "out.asm"
+        rom_filepath.write_bytes(b"\x60")
+        asm_filepath.write_text("ORG &8000\n")
+
+        captured: dict[str, object] = {}
+
+        import subprocess as subprocess_module
+
+        def fake_run(cmd, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            captured["input_arg"] = cmd[cmd.index("-i") + 1]
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"\x60")
+            return subprocess_module.CompletedProcess(
+                args=cmd, returncode=0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr(
+            "fantasm.api.verify.subprocess.run", fake_run
+        )
+
+        verify_round_trip(
+            rom_filepath, asm_filepath, beebasm_filepath="/bin/true"
+        )
+
+        assert captured["cwd"] == str(output_dirpath.resolve())
+        # -i is made absolute so it survives the cwd change.
+        assert Path(str(captured["input_arg"])).is_absolute()
+        assert captured["input_arg"] == str(asm_filepath.resolve())
 
     def test_trailing_slice_mismatch_reports_diff_within_slice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -93,6 +93,13 @@ def verify_round_trip(
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
         tmp_filepath = Path(tmp.name)
 
+    # Run beebasm from the listing's own directory so relative file
+    # directives (INCBIN/PUTFILE/PUTBASIC) resolve against the payload
+    # sitting beside the listing, not against fantasm's invocation
+    # directory. ``-i``/``-o`` are made absolute so they are unaffected
+    # by the working-directory change.
+    asm_filepath = Path(asm_filepath).resolve()
+
     try:
         result = subprocess.run(
             [
@@ -100,6 +107,7 @@ def verify_round_trip(
                 "-i", str(asm_filepath),
                 "-o", str(tmp_filepath),
             ],
+            cwd=str(asm_filepath.parent),
             capture_output=True,
             text=True,
         )
