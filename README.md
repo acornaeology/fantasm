@@ -5,7 +5,7 @@
 
 # Fantasm
 
-The Fantastic (dis-/re-)Assembly tools for 6502 code, version `1.0.0`.
+The Fantastic (dis-/re-)Assembly tools for 6502 code, version `1.1.0`.
 
 <p align="center">
   <a href="https://pypi.org/project/fantasm/"><img src="https://img.shields.io/pypi/v/fantasm.svg" alt="PyPI"></a>
@@ -38,7 +38,7 @@ dependency:
 ```toml
 [project]
 dependencies = [
-    "fantasm>=1.0.0",
+    "fantasm>=1.1.0",
 ]
 ```
 
