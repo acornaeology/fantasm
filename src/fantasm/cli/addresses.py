@@ -8,7 +8,7 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 from ..api.blockmatch import build_full_address_map
 from ..cli_helpers import (
     project_cpu,
-    project_rom_base,
+    project_binary_base,
     require_project,
     resolve_version_files,
 )
@@ -76,17 +76,17 @@ def addresses_map(
     if cpu is None:
         cpu = project_cpu(project_context)
     if rom_base is None:
-        rom_base = project_rom_base(project_context)
+        rom_base = project_binary_base(project_context)
 
     files_source = resolve_version_files(project_context, source_version)
     files_target = resolve_version_files(project_context, target_version)
-    if not files_source.rom_filepath.exists():
-        raise click.UsageError(f"ROM not found: {files_source.rom_filepath}")
-    if not files_target.rom_filepath.exists():
-        raise click.UsageError(f"ROM not found: {files_target.rom_filepath}")
+    if not files_source.binary_filepath.exists():
+        raise click.UsageError(f"binary not found: {files_source.binary_filepath}")
+    if not files_target.binary_filepath.exists():
+        raise click.UsageError(f"binary not found: {files_target.binary_filepath}")
 
-    rom_source = files_source.rom_filepath.read_bytes()
-    rom_target = files_target.rom_filepath.read_bytes()
+    rom_source = files_source.binary_filepath.read_bytes()
+    rom_target = files_target.binary_filepath.read_bytes()
 
     full_map, primary_map, supplementary_map, _blocks = build_full_address_map(
         rom_source, rom_target,

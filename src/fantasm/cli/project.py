@@ -7,7 +7,11 @@ from pathlib import Path
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
-from ..api.paths import project_rom_prefixes, project_versions_dirpath
+from ..api.paths import (
+    project_binary_dirname,
+    project_rom_prefixes,
+    project_versions_dirpath,
+)
 from ..api.project import (
     ProjectInitConfig,
     add_version,
@@ -98,9 +102,10 @@ def project_init(
 @project.command(
     "add",
     help=(
-        "Create a new ROM-version directory under the project. Builds "
-        "{versions}/{prefix}-{version_id}/ with rom/ and output/ "
-        "subdirectories ready for ROM bytes and disassembly artefacts."
+        "Create a new version directory under the project. Builds "
+        "{versions}/{prefix}-{version_id}/ with the configured binary "
+        "subdirectory ([binary] dir, default rom/) and output/, ready "
+        "for the binary bytes and disassembly artefacts."
     ),
 )
 @click.argument("version_id")
@@ -130,12 +135,15 @@ def project_add(
                 "[versions] prefixes in fantasm.toml"
             )
         prefix = configured_prefixes[0]
+    binary_dirname = project_binary_dirname(project_context)
     try:
-        version_dirpath = add_version(versions_dirpath, version_id, prefix)
+        version_dirpath = add_version(
+            versions_dirpath, version_id, prefix, binary_dirname
+        )
     except (FileExistsError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
     click.echo(f"Created {version_dirpath}")
-    click.echo("  rom/    (drop the ROM bytes here)")
+    click.echo(f"  {binary_dirname}/ (drop the binary bytes here)")
     click.echo("  output/ (disassembly artefacts go here)")
 
 

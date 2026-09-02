@@ -122,13 +122,15 @@ def add_version(
     versions_dirpath: Path,
     version_id: str,
     prefix: str,
+    binary_dirname: str = "rom",
 ) -> Path:
     """Create a new version directory ``{prefix}-{version_id}/``.
 
-    Creates ``rom/`` and ``output/`` subdirectories (each with a
-    ``.gitkeep``). Returns the new version directory path. Raises
-    ``FileExistsError`` if it already exists, ``ValueError`` for an
-    invalid prefix.
+    Creates the binary subdirectory (``binary_dirname``, default
+    ``rom/`` per the historical ROM convention) and ``output/`` (each
+    with a ``.gitkeep``). Returns the new version directory path.
+    Raises ``FileExistsError`` if it already exists, ``ValueError``
+    for an invalid prefix.
     """
     if not VALID_PREFIX_RE.match(prefix):
         raise ValueError(f"invalid prefix {prefix!r}")
@@ -143,7 +145,7 @@ def add_version(
         raise FileExistsError(f"{version_dirpath} already exists")
 
     version_dirpath.mkdir()
-    for subname in ("rom", "output"):
+    for subname in (binary_dirname, "output"):
         subdirpath = version_dirpath / subname
         subdirpath.mkdir()
         (subdirpath / ".gitkeep").touch()

@@ -39,10 +39,10 @@ def _collect_broken_scheme_links(actx, driver_filepath):
                 glossary_filepath.read_text())
 
     sources = [(driver_filepath.name, driver_filepath.read_text())]
-    rom_json_filepath = actx.files.version_dirpath / "rom" / "rom.json"
-    if rom_json_filepath.is_file():
-        rom_meta = json.loads(rom_json_filepath.read_text())
-        for doc in rom_meta.get("docs", []):
+    metadata_filepath = actx.files.metadata_filepath
+    if metadata_filepath.is_file():
+        metadata = json.loads(metadata_filepath.read_text())
+        for doc in metadata.get("docs", []):
             doc_filepath = actx.files.version_dirpath / doc["path"]
             if doc_filepath.is_file():
                 sources.append((doc["path"], doc_filepath.read_text()))

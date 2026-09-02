@@ -6,7 +6,7 @@ import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.fingerprint import find_duplicate_blocks, fingerprint_blocks
-from ..cli_helpers import analysis_context, project_cpu, project_rom_base
+from ..cli_helpers import analysis_context, project_cpu, project_binary_base
 from ._options import cpu_option, rom_base_option
 
 
@@ -38,12 +38,12 @@ def fingerprint_cmd(
     if cpu is None:
         cpu = project_cpu(actx.project)
     if rom_base is None:
-        rom_base = project_rom_base(actx.project)
-    if not actx.files.rom_filepath.exists():
-        raise click.UsageError(f"ROM not found: {actx.files.rom_filepath}")
+        rom_base = project_binary_base(actx.project)
+    if not actx.files.binary_filepath.exists():
+        raise click.UsageError(f"binary not found: {actx.files.binary_filepath}")
 
     fps = fingerprint_blocks(
-        actx.files.rom_filepath.read_bytes(),
+        actx.files.binary_filepath.read_bytes(),
         block_size=block_size,
         cpu=cpu,
         rom_base=rom_base,

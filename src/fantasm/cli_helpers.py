@@ -22,6 +22,11 @@ import click
 from .api.audit import build_memory_regions, load_subroutines
 from .api.paths import (
     VersionNotFoundError,
+    project_binary_base,
+    project_binary_dirname,
+    project_binary_extension,
+    project_binary_metadata_filename,
+    project_cpu,
     project_driver_dirname,
     project_driver_filename_template,
     project_rom_prefixes,
@@ -41,19 +46,22 @@ from .config import ProjectContext
 class VersionFiles:
     """Conventional file paths inside a version directory.
 
-    ``versions/{prefix}-{version_id}/`` is the version directory; the
-    ROM lives under ``rom/{prefix}-{version_id}.rom`` and disassembly
-    artefacts under ``output/{prefix}-{version_id}.{asm,json}``. The
-    driver script's path is derived from
-    ``[versions] driver_dirname`` and ``[versions] driver_filename``
-    (defaults: ``disassemble/`` and
+    ``versions/{prefix}-{version_id}/`` is the version directory. The
+    program binary and its metadata live under a configurable
+    subdirectory (``[binary] dir``/``extension``/``metadata``,
+    defaulting to the ROM convention ``rom/{prefix}-{version_id}.rom``
+    and ``rom/rom.json``); disassembly artefacts live under
+    ``output/{prefix}-{version_id}.{asm,json}``. The driver script's
+    path is derived from ``[versions] driver_dirname`` and
+    ``[versions] driver_filename`` (defaults: ``disassemble/`` and
     ``disasm_{prefix}_{version_id_no_dots}.py``).
     """
 
     version_id: str
     prefix: str
     version_dirpath: Path
-    rom_filepath: Path
+    binary_filepath: Path
+    metadata_filepath: Path
     asm_filepath: Path
     json_filepath: Path
     driver_filepath: Path
@@ -120,34 +128,23 @@ def resolve_version_files(
         matched_prefix,
         version_id,
     )
+    binary_dirname = project_binary_dirname(project_context)
+    extension = project_binary_extension(project_context)
+    binary_suffix = f".{extension}" if extension else ""
+    binary_dirpath = version_dirpath / binary_dirname
     return VersionFiles(
         version_id=version_id,
         prefix=matched_prefix,
         version_dirpath=version_dirpath,
-        rom_filepath=version_dirpath / "rom" / f"{base}.rom",
+        binary_filepath=binary_dirpath / f"{base}{binary_suffix}",
+        metadata_filepath=(
+            binary_dirpath
+            / project_binary_metadata_filename(project_context)
+        ),
         asm_filepath=version_dirpath / "output" / f"{base}.asm",
         json_filepath=version_dirpath / "output" / f"{base}.json",
         driver_filepath=version_dirpath / driver_dirname / driver_filename,
     )
-
-
-def project_cpu(project_context: ProjectContext) -> str:
-    """Return the project's default CPU from ``[rom] cpu``.
-
-    Falls back to ``"6502"`` when unset or when the project root
-    isn't resolved.
-    """
-    rom_section = project_context.config.get("rom", {})
-    return rom_section.get("cpu", "6502")
-
-
-def project_rom_base(project_context: ProjectContext) -> int:
-    """Return the project's default ROM load address from ``[rom] base_address``.
-
-    Falls back to ``0x8000`` (BBC sideways-ROM convention) when unset.
-    """
-    rom_section = project_context.config.get("rom", {})
-    return rom_section.get("base_address", 0x8000)
 
 
 def effective_regions_for(
@@ -268,29 +265,29 @@ def analysis_context(
     )
 
 
-def make_rom_loader(
+def make_binary_loader(
     project_context: ProjectContext,
 ) -> Callable[[str], bytes]:
-    """Return a memoised ROM-bytes loader keyed by version id.
+    """Return a memoised program-binary loader keyed by version id.
 
     Used by cross-version commands (backfill, annotations diff) that
     walk the version graph and need to read each visited version's
-    ROM. The cache lives in the closure, so each command invocation
-    gets its own loader — caching is local to a single CLI run, not
-    process-global.
+    binary bytes. The cache lives in the closure, so each command
+    invocation gets its own loader — caching is local to a single CLI
+    run, not process-global.
 
-    Raises ``click.UsageError`` if a version's ROM file is missing.
+    Raises ``click.UsageError`` if a version's binary file is missing.
     """
     cache: dict[str, bytes] = {}
 
     def loader(version_id: str) -> bytes:
         if version_id not in cache:
             files = resolve_version_files(project_context, version_id)
-            if not files.rom_filepath.exists():
+            if not files.binary_filepath.exists():
                 raise click.UsageError(
-                    f"ROM not found: {files.rom_filepath}"
+                    f"binary not found: {files.binary_filepath}"
                 )
-            cache[version_id] = files.rom_filepath.read_bytes()
+            cache[version_id] = files.binary_filepath.read_bytes()
         return cache[version_id]
 
     return loader
@@ -301,9 +298,9 @@ __all__ = [
     "VersionFiles",
     "analysis_context",
     "effective_regions_for",
-    "make_rom_loader",
+    "make_binary_loader",
+    "project_binary_base",
     "project_cpu",
-    "project_rom_base",
     "require_project",
     "resolve_version_files",
 ]

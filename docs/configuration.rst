@@ -36,10 +36,13 @@ without confusing fantasm.
 .. code-block:: toml
 
    [project]            # name, used in messages and as a fallback
-   [rom]                # CPU and base address for opcode decoding
-   [versions]           # directory layout + ROM-name prefixes
+   [binary]             # CPU, base address, and per-version binary layout
+   [versions]           # directory layout + version-name prefixes
    [memory]             # workspace + hardware regions used by every version
-   [[versions.entry]]   # one block per ROM version, with the version graph
+   [[versions.entry]]   # one block per version, with the version graph
+
+(``[rom]`` is accepted as a back-compatible alias for ``[binary]`` —
+see below.)
 
 
 ``[project]``
@@ -55,14 +58,22 @@ without confusing fantasm.
   strings the CLI emits in error and help messages.
 
 
-``[rom]``
-~~~~~~~~~
+``[binary]``
+~~~~~~~~~~~~
+
+The program binary each version disassembles — a sideways ROM image,
+or any other load-and-run binary. ``cpu`` and ``base_address`` describe
+how to decode it; the layout keys say where its bytes and metadata live
+under the version directory.
 
 .. code-block:: toml
 
-   [rom]
+   [binary]
    cpu          = "6502"     # default; overridden by drivers as needed
-   base_address = 0x8000     # the address the ROM is mapped at
+   base_address = 0x8000     # the address the binary is mapped at
+   dir          = "rom"      # per-version subdirectory (default)
+   extension    = "rom"      # binary file extension, no dot (default)
+   metadata     = "rom.json" # metadata filename (default)
 
 * ``cpu`` — recognised values, case-insensitive: ``"6502"``,
   ``"nmos"`` (alias), ``"65c02"``, ``"65sc12"``, ``"65c12"``,
@@ -72,9 +83,44 @@ without confusing fantasm.
   specific version (ANFS 4.21 does this — base default of 6502 with
   the driver overriding to 65c02).
 * ``base_address`` — defaults to ``0x8000`` (BBC sideways-ROM
-  convention). Override for ROMs mapped elsewhere — for example
-  ``0xE000`` for the standalone Acorn Econet Bridge, or ``0xF800``
-  for the BBC Tube Client.
+  convention). Override for binaries mapped elsewhere — for example
+  ``0xE000`` for the standalone Acorn Econet Bridge, ``0xF800`` for
+  the BBC Tube Client, or ``0x1900`` for a DFS ``*RUN`` program that
+  loads into main memory.
+* ``dir`` — the per-version subdirectory holding the binary and its
+  metadata. Default ``"rom"``.
+* ``extension`` — the binary file's extension, **without** a leading
+  dot. Default ``"rom"``. An empty string (``""``) means the binary
+  has no extension — as for a DFS program named literally ``KEYPAD``.
+* ``metadata`` — the metadata filename inside ``dir`` (its ``docs``
+  list is consulted by ``fantasm lint``). Default ``"rom.json"``.
+
+The binary for version ``V`` (prefix ``P``) resolves to
+``versions/P-V/<dir>/P-V[.<extension>]`` and its metadata to
+``versions/P-V/<dir>/<metadata>``. With the defaults this is the
+historical ``rom/P-V.rom`` + ``rom/rom.json`` layout.
+
+The driver script receives the resolved binary path in the
+``FANTASM_BINARY`` environment variable (and, for back-compat, the
+same value in ``FANTASM_ROM``).
+
+.. note::
+
+   ``[rom]`` is still accepted as an alias for ``[binary]`` — a project
+   that predates the neutral vocabulary needs no changes. When both
+   sections are present ``[binary]`` wins (they are not merged), so move
+   all keys together when migrating.
+
+A DFS ``*RUN`` program disassembly, for example:
+
+.. code-block:: toml
+
+   [binary]
+   cpu          = "6502"
+   base_address = 0x1900
+   dir          = "binary"
+   extension    = ""            # KEYPAD, not KEYPAD.rom
+   metadata     = "binary.json"
 
 
 ``[versions]``
@@ -339,7 +385,7 @@ declared workspace, and one ``[[versions.entry]]``:
    [project]
    name = "acorn-econet-bridge"
 
-   [rom]
+   [binary]
    cpu          = "6502"
    base_address = 0xE000     # standalone 6502, ROM at &E000-&FFFF
 

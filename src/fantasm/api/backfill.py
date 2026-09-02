@@ -38,6 +38,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .blockmatch import disassemble_to_opcodes
+from .paths import (
+    DEFAULT_BASE_ADDRESS,
+    DEFAULT_CPU,
+    project_binary_base,
+    project_cpu,
+)
 
 if TYPE_CHECKING:
     from fantasm.config import ProjectContext
@@ -638,23 +644,30 @@ def diff_annotations(
 def make_project_rom_loader(
     project: "ProjectContext",
 ) -> Callable[[str], bytes]:
-    """Return a memoised ROM-bytes loader keyed by version id.
+    """Return a memoised program-binary loader keyed by version id.
 
     The loader resolves each version's directory against the project
-    config (``[versions] prefixes`` / ``directory``), then reads
-    ``versions/<prefix>-<id>/rom/<prefix>-<id>.rom``. Bytes are
-    cached for the lifetime of the returned closure.
+    config (``[versions] prefixes`` / ``directory``), then reads the
+    binary from the configured ``[binary]`` layout
+    (``dir``/``extension``), defaulting to
+    ``versions/<prefix>-<id>/rom/<prefix>-<id>.rom``. Bytes are cached
+    for the lifetime of the returned closure.
 
     Raises :class:`FileNotFoundError` when a requested version's
-    ROM file is missing — the API-layer counterpart to the CLI's
+    binary file is missing — the API-layer counterpart to the CLI's
     ``click.UsageError``.
     """
     from .paths import (
+        project_binary_dirname,
+        project_binary_extension,
         project_rom_prefixes,
         resolve_version_dirpath_for_project,
     )
 
     prefixes = project_rom_prefixes(project)
+    binary_dirname = project_binary_dirname(project)
+    extension = project_binary_extension(project)
+    binary_suffix = f".{extension}" if extension else ""
     cache: dict[str, bytes] = {}
 
     def loader(version_id: str) -> bytes:
@@ -668,12 +681,15 @@ def make_project_rom_loader(
                 prefixes[0] if prefixes else "",
             )
             base = f"{matched_prefix}-{version_id}"
-            rom_filepath = version_dirpath / "rom" / f"{base}.rom"
-            if not rom_filepath.exists():
+            binary_filepath = (
+                version_dirpath / binary_dirname / f"{base}{binary_suffix}"
+            )
+            if not binary_filepath.exists():
                 raise FileNotFoundError(
-                    f"ROM not found for version {version_id!r}: {rom_filepath}"
+                    f"binary not found for version {version_id!r}: "
+                    f"{binary_filepath}"
                 )
-            cache[version_id] = rom_filepath.read_bytes()
+            cache[version_id] = binary_filepath.read_bytes()
         return cache[version_id]
 
     return loader
@@ -726,8 +742,9 @@ def propose_translations(
             are proposed.
         threshold: Minimum composed block length for a candidate.
             Default 5 matches ``fantasm backfill``'s CLI default.
-        cpu: Override for the project's ``[rom] cpu`` setting.
-        rom_base: Override for the project's ``[rom] base_address``.
+        cpu: Override for the project's ``[binary]``/``[rom] cpu``.
+        rom_base: Override for the project's
+            ``[binary]``/``[rom] base_address``.
         workspace_ranges: Identity-mapped workspace regions.
         high_confidence: Confidence stamped on workspace mappings.
 
@@ -750,13 +767,15 @@ def propose_translations(
             f"target driver not found: {target_driver}"
         )
 
-    rom_section: dict = {}
     if project.has_root:
-        rom_section = dict(project.config.get("rom", {}))
+        if cpu is None:
+            cpu = project_cpu(project)
+        if rom_base is None:
+            rom_base = project_binary_base(project)
     if cpu is None:
-        cpu = rom_section.get("cpu", "6502")
+        cpu = DEFAULT_CPU
     if rom_base is None:
-        rom_base = rom_section.get("base_address", 0x8000)
+        rom_base = DEFAULT_BASE_ADDRESS
 
     target_text = (
         target_driver.read_text() if target_driver is not None else ""

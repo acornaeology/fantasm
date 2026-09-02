@@ -139,7 +139,7 @@ def test_bytes_find_missing_rom(tmp_path: Path) -> None:
          "bytes", "find", "1.0", "4C B9 FF"],
     )
     assert result.exit_code != 0
-    assert "ROM not found" in result.output
+    assert "binary not found" in result.output
 
 
 def test_bytes_find_help_lists_cross_option() -> None:

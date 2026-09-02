@@ -2,10 +2,14 @@
 
 Resolves the driver filepath via fantasm.toml's
 ``[versions] driver_dirname/driver_filename`` and runs it as a
-subprocess with two environment variables pointing at the
-conventional ROM and output locations:
+subprocess with environment variables pointing at the conventional
+binary and output locations:
 
-- ``FANTASM_ROM``        — ``<version_dir>/rom/<prefix>-<version>.rom``
+- ``FANTASM_BINARY``     — the version's program binary (path derived
+  from the ``[binary]`` layout config; defaults to
+  ``<version_dir>/rom/<prefix>-<version>.rom``)
+- ``FANTASM_ROM``        — the same path, kept for back-compat with
+  drivers that read the older name
 - ``FANTASM_OUTPUT_DIR`` — ``<version_dir>/output``
 
 The driver itself is library-agnostic — typically built on
@@ -36,9 +40,9 @@ from ..cli_helpers import analysis_context
         "Run the version's disassembly driver script to (re-)generate "
         "the .asm and .json disassembly artefacts. The driver lives "
         "at <versions>/<prefix>-<VERSION_ID>/<driver_dirname>/"
-        "<driver_filename> and is run with FANTASM_ROM and "
-        "FANTASM_OUTPUT_DIR set to the conventional paths under "
-        "the version directory."
+        "<driver_filename> and is run with FANTASM_BINARY (and its "
+        "FANTASM_ROM back-compat alias) and FANTASM_OUTPUT_DIR set to "
+        "the conventional paths under the version directory."
     ),
 )
 @click.argument("version_id")
@@ -55,7 +59,11 @@ def disassemble(ctx: click.Context, version_id: str) -> None:
     output_dirpath.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["FANTASM_ROM"] = str(actx.files.rom_filepath)
+    binary_filepath = str(actx.files.binary_filepath)
+    env["FANTASM_BINARY"] = binary_filepath
+    # Retained alongside FANTASM_BINARY so existing driver scripts that
+    # read the older name keep working.
+    env["FANTASM_ROM"] = binary_filepath
     env["FANTASM_OUTPUT_DIR"] = str(output_dirpath)
 
     result = subprocess.run(

@@ -55,22 +55,22 @@ def verify(
         failures = 0
         for info in infos:
             files = resolve_version_files(project_context, info.version_id)
-            if not files.rom_filepath.exists() or not files.asm_filepath.exists():
+            if not files.binary_filepath.exists() or not files.asm_filepath.exists():
                 click.echo(
-                    f"{info.version_id}: SKIPPED (missing rom or asm)",
+                    f"{info.version_id}: SKIPPED (missing binary or asm)",
                     err=True,
                 )
                 failures += 1
                 continue
             try:
                 result = verify_round_trip(
-                    files.rom_filepath, files.asm_filepath
+                    files.binary_filepath, files.asm_filepath
                 )
             except BeebasmNotFoundError as exc:
                 raise click.UsageError(str(exc)) from exc
             if result.matched:
                 slice_note = (
-                    f" sliced from {result.rom_size}b ROM"
+                    f" sliced from {result.rom_size}b"
                     if result.compared_size != result.rom_size
                     else ""
                 )
@@ -89,7 +89,7 @@ def verify(
                     else ""
                 )
                 click.echo(
-                    f"{info.version_id}: FAILED rom={result.rom_size}b{slice_note} "
+                    f"{info.version_id}: FAILED binary={result.rom_size}b{slice_note} "
                     f"assembled={result.assembled_size}b {detail}",
                     err=True,
                 )
@@ -101,7 +101,7 @@ def verify(
 
     files = resolve_version_files(project_context, version_id)
     try:
-        result = verify_round_trip(files.rom_filepath, files.asm_filepath)
+        result = verify_round_trip(files.binary_filepath, files.asm_filepath)
     except FileNotFoundError as exc:
         raise click.UsageError(str(exc)) from exc
     except BeebasmNotFoundError as exc:
@@ -109,7 +109,7 @@ def verify(
 
     if result.matched:
         slice_note = (
-            f" (sliced from {result.rom_size}-byte ROM)"
+            f" (sliced from {result.rom_size}-byte binary)"
             if result.compared_size != result.rom_size
             else ""
         )
@@ -123,7 +123,7 @@ def verify(
         else ""
     )
     click.echo(
-        f"Verification FAILED: rom={result.rom_size}b{slice_note} "
+        f"Verification FAILED: binary={result.rom_size}b{slice_note} "
         f"assembled={result.assembled_size}b "
         + (
             f"first_diff=&{result.first_diff_offset:04X}"

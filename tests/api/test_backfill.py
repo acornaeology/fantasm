@@ -618,5 +618,5 @@ class TestMakeProjectRomLoader:
         loader = make_project_rom_loader(project)
         # Remove the ROM bytes for 2.0 before asking for it.
         (tmp_path / "versions/demo-2.0/rom/demo-2.0.rom").unlink()
-        with pytest.raises(FileNotFoundError, match="ROM not found"):
+        with pytest.raises(FileNotFoundError, match="binary not found"):
             loader("2.0")

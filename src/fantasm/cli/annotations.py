@@ -16,9 +16,9 @@ from ..api.version_graph import (
     load_version_graph,
 )
 from ..cli_helpers import (
-    make_rom_loader,
+    make_binary_loader,
     project_cpu,
-    project_rom_base,
+    project_binary_base,
     require_project,
     resolve_version_files,
 )
@@ -95,7 +95,7 @@ def annotations_diff(
     if cpu is None:
         cpu = project_cpu(project_context)
     if rom_base is None:
-        rom_base = project_rom_base(project_context)
+        rom_base = project_binary_base(project_context)
 
     try:
         graph = load_version_graph(project_context)
@@ -127,7 +127,7 @@ def annotations_diff(
                 "--target-driver explicitly"
             )
 
-    loader = make_rom_loader(project_context)
+    loader = make_binary_loader(project_context)
 
     try:
         confidence_map = compose_chained_map(

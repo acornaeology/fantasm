@@ -25,15 +25,24 @@ clean exit code with a helpful message.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fantasm.config import ProjectContext
 
 
 DEFAULT_VERSIONS_DIRNAME = "versions"
+
+# Defaults for the per-version binary layout. These reproduce the
+# historical ROM-image convention, so a project with only a ``[rom]``
+# section (or none at all) is unaffected.
+DEFAULT_BINARY_DIRNAME = "rom"
+DEFAULT_BINARY_EXTENSION = "rom"
+DEFAULT_BINARY_METADATA_FILENAME = "rom.json"
+DEFAULT_CPU = "6502"
+DEFAULT_BASE_ADDRESS = 0x8000
 
 # Default convention for the per-version disassembly driver script
 # (whether built on dasmos, py8dis, or any other library).
@@ -204,11 +213,88 @@ def project_driver_filename_template(project: ProjectContext) -> str:
     )
 
 
+def project_binary_section(project: ProjectContext) -> Mapping[str, Any]:
+    """Return the project's binary-layout config section.
+
+    Reads ``[binary]`` from ``fantasm.toml`` when present, else falls
+    back to the historical ``[rom]`` section, else an empty mapping.
+    The two are not merged — whichever section is present wins — so a
+    project migrating to ``[binary]`` should move all of its keys.
+    """
+    config = project.config
+    if "binary" in config:
+        return config.get("binary", {})
+    return config.get("rom", {})
+
+
+def project_cpu(project: ProjectContext) -> str:
+    """Return the project's default CPU (``cpu`` key).
+
+    Reads ``[binary] cpu`` (or ``[rom] cpu``), defaulting to ``"6502"``.
+    """
+    return project_binary_section(project).get("cpu", DEFAULT_CPU)
+
+
+def project_binary_base(project: ProjectContext) -> int:
+    """Return the project's default load address (``base_address`` key).
+
+    Reads ``[binary] base_address`` (or ``[rom] base_address``),
+    defaulting to ``0x8000`` (the BBC sideways-ROM convention).
+    """
+    return project_binary_section(project).get(
+        "base_address", DEFAULT_BASE_ADDRESS
+    )
+
+
+def project_binary_dirname(project: ProjectContext) -> str:
+    """Return the per-version binary subdirectory name (``dir`` key).
+
+    Reads ``[binary] dir`` (or ``[rom] dir``), defaulting to ``"rom"``.
+    """
+    return project_binary_section(project).get(
+        "dir", DEFAULT_BINARY_DIRNAME
+    )
+
+
+def project_binary_extension(project: ProjectContext) -> str:
+    """Return the binary file extension, without a leading dot.
+
+    Reads ``[binary] extension`` (or ``[rom] extension``), defaulting
+    to ``"rom"``. An empty string means the binary has no extension
+    (e.g. a DFS ``*RUN`` program named ``KEYPAD``).
+    """
+    return project_binary_section(project).get(
+        "extension", DEFAULT_BINARY_EXTENSION
+    )
+
+
+def project_binary_metadata_filename(project: ProjectContext) -> str:
+    """Return the per-version metadata filename (``metadata`` key).
+
+    Reads ``[binary] metadata`` (or ``[rom] metadata``), defaulting to
+    ``"rom.json"``. The file lives in the binary subdirectory.
+    """
+    return project_binary_section(project).get(
+        "metadata", DEFAULT_BINARY_METADATA_FILENAME
+    )
+
+
 __all__ = [
+    "DEFAULT_BASE_ADDRESS",
+    "DEFAULT_BINARY_DIRNAME",
+    "DEFAULT_BINARY_EXTENSION",
+    "DEFAULT_BINARY_METADATA_FILENAME",
+    "DEFAULT_CPU",
     "DEFAULT_DRIVER_DIRNAME",
     "DEFAULT_DRIVER_FILENAME_TEMPLATE",
     "DEFAULT_VERSIONS_DIRNAME",
     "VersionNotFoundError",
+    "project_binary_base",
+    "project_binary_dirname",
+    "project_binary_extension",
+    "project_binary_metadata_filename",
+    "project_binary_section",
+    "project_cpu",
     "project_driver_dirname",
     "project_driver_filename_template",
     "project_rom_prefixes",

@@ -18,7 +18,7 @@ from ..api.bytes_search import (
 )
 from ..cli_helpers import (
     analysis_context,
-    project_rom_base,
+    project_binary_base,
     require_project,
     resolve_version_files,
 )
@@ -46,10 +46,15 @@ def bytes_group() -> None:
 @click.argument("version_id")
 @click.argument("hex_sequence")
 @click.option(
+    "--base-address",
     "--rom-base",
+    "rom_base",
     type=click.IntRange(0, 0xFFFF),
     default=None,
-    help="ROM load address; defaults to [rom] base_address (or 0x8000).",
+    help=(
+        "Load address; defaults to [binary] base_address "
+        "(or [rom], or 0x8000)."
+    ),
 )
 @click.option(
     "--cross",
@@ -79,7 +84,7 @@ def bytes_find(
     ctx = click.get_current_context()
     project_context = require_project(ctx)
     if rom_base is None:
-        rom_base = project_rom_base(project_context)
+        rom_base = project_binary_base(project_context)
 
     has_wildcards = bool(pattern.wildcards)
     show_cross = bool(cross_versions)
@@ -153,9 +158,9 @@ def bytes_find(
 def _load_rom(project_context, version_id: str) -> bytes:
     """Resolve and read the ROM bytes for ``version_id``."""
     files = resolve_version_files(project_context, version_id)
-    if not files.rom_filepath.exists():
-        raise click.UsageError(f"ROM not found: {files.rom_filepath}")
-    return files.rom_filepath.read_bytes()
+    if not files.binary_filepath.exists():
+        raise click.UsageError(f"binary not found: {files.binary_filepath}")
+    return files.binary_filepath.read_bytes()
 
 
 def _format_captures(captures: tuple[int, ...]) -> str:
