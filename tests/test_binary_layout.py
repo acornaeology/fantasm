@@ -19,8 +19,10 @@ from fantasm.api.paths import (
     project_binary_base,
     project_binary_dirname,
     project_binary_extension,
+    project_binary_filename_template,
     project_binary_metadata_filename,
     project_cpu,
+    render_binary_filename,
 )
 from fantasm.cli import main
 from fantasm.cli_helpers import resolve_version_files
@@ -75,6 +77,65 @@ class TestBinarySection:
         assert (
             files.metadata_filepath
             == version_dirpath / "binary" / "binary.json"
+        )
+
+
+# --- configurable binary filename (#22) -----------------------------
+
+
+DFS_STYLE = """\
+[project]
+name = "voltmace"
+
+[binary]
+base_address = 0x1900
+dir = "binary"
+extension = ""
+metadata = "binary.json"
+filename = "{version_id_upper}"
+
+[versions]
+prefixes = ["voltmace"]
+"""
+
+
+class TestBinaryFilenameTemplate:
+    def test_default_template_is_prefixed_name(self, tmp_path: Path) -> None:
+        _write_project(tmp_path, ROM_STYLE)
+        project = resolve_project_context(tmp_path)
+        assert (
+            project_binary_filename_template(project)
+            == "{prefix}-{version_id}"
+        )
+
+    def test_dfs_name_renders_from_id(self, tmp_path: Path) -> None:
+        (tmp_path / "fantasm.toml").write_text(DFS_STYLE)
+        (tmp_path / "versions" / "voltmace-keypad").mkdir(parents=True)
+        project = resolve_project_context(tmp_path)
+
+        assert project_binary_filename_template(project) == "{version_id_upper}"
+        files = resolve_version_files(project, "keypad")
+        binary_dirpath = tmp_path / "versions" / "voltmace-keypad" / "binary"
+        # DFS name kept: KEYPAD, not voltmace-keypad, and no extension.
+        assert files.binary_filepath == binary_dirpath / "KEYPAD"
+        # .asm/.json outputs stay prefixed.
+        assert files.asm_filepath.name == "voltmace-keypad.asm"
+        assert files.json_filepath.name == "voltmace-keypad.json"
+
+    def test_render_binary_filename_tokens(self) -> None:
+        assert (
+            render_binary_filename("{version_id_upper}", "demo", "keypad")
+            == "KEYPAD"
+        )
+        assert (
+            render_binary_filename("{prefix}-{version_id}", "demo", "1.0")
+            == "demo-1.0"
+        )
+        assert (
+            render_binary_filename(
+                "{prefix_upper}_{version_id_no_dots}", "nfs", "3.10"
+            )
+            == "NFS_310"
         )
 
 

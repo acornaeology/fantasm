@@ -51,23 +51,53 @@ DEFAULT_BASE_ADDRESS = 0x8000
 DEFAULT_DRIVER_DIRNAME = "disassemble"
 DEFAULT_DRIVER_FILENAME_TEMPLATE = "disasm_{prefix}_{version_id_no_dots}.py"
 
+# Default convention for the per-version binary basename (the extension,
+# if any, is appended afterwards). Same token set as the driver template.
+# Default reproduces the historical ``{prefix}-{version_id}`` name.
+DEFAULT_BINARY_FILENAME_TEMPLATE = "{prefix}-{version_id}"
+
+
+def _filename_tokens(prefix: str, version_id: str) -> dict[str, str]:
+    """Build the token substitutions shared by the filename renderers.
+
+    Recognised tokens:
+
+    - ``{prefix}`` / ``{prefix_upper}`` / ``{prefix_lower}``
+    - ``{version_id}``          — the version ID as written
+    - ``{version_id_no_dots}``  — version ID with all ``.`` removed
+    - ``{version_id_upper}`` / ``{version_id_lower}`` — case variants
+    """
+    return {
+        "prefix": prefix,
+        "prefix_upper": prefix.upper(),
+        "prefix_lower": prefix.lower(),
+        "version_id": version_id,
+        "version_id_no_dots": version_id.replace(".", ""),
+        "version_id_upper": version_id.upper(),
+        "version_id_lower": version_id.lower(),
+    }
+
 
 def render_driver_filename(
     template: str, prefix: str, version_id: str
 ) -> str:
     """Render a driver-filename template with project / version tokens.
 
-    Recognised tokens:
-
-    - ``{prefix}``              — the matched ROM prefix
-    - ``{version_id}``          — the version ID as written
-    - ``{version_id_no_dots}``  — version ID with all ``.`` removed
+    See :func:`_filename_tokens` for the recognised tokens.
     """
-    return template.format(
-        prefix=prefix,
-        version_id=version_id,
-        version_id_no_dots=version_id.replace(".", ""),
-    )
+    return template.format(**_filename_tokens(prefix, version_id))
+
+
+def render_binary_filename(
+    template: str, prefix: str, version_id: str
+) -> str:
+    """Render a binary-basename template with project / version tokens.
+
+    Same token set as :func:`render_driver_filename` (see
+    :func:`_filename_tokens`). The binary's extension, if any, is
+    appended by the caller after the rendered basename.
+    """
+    return template.format(**_filename_tokens(prefix, version_id))
 
 
 class VersionNotFoundError(LookupError):
@@ -279,10 +309,25 @@ def project_binary_metadata_filename(project: ProjectContext) -> str:
     )
 
 
+def project_binary_filename_template(project: ProjectContext) -> str:
+    """Return the binary-basename template (``filename`` key).
+
+    Reads ``[binary] filename`` (or ``[rom] filename``), defaulting to
+    ``"{prefix}-{version_id}"``. Rendered by
+    :func:`render_binary_filename`; the extension (if any) is appended
+    afterwards. Set e.g. ``"{version_id_upper}"`` to keep an Acorn
+    DFS-style name like ``KEYPAD`` from the id ``keypad``.
+    """
+    return project_binary_section(project).get(
+        "filename", DEFAULT_BINARY_FILENAME_TEMPLATE
+    )
+
+
 __all__ = [
     "DEFAULT_BASE_ADDRESS",
     "DEFAULT_BINARY_DIRNAME",
     "DEFAULT_BINARY_EXTENSION",
+    "DEFAULT_BINARY_FILENAME_TEMPLATE",
     "DEFAULT_BINARY_METADATA_FILENAME",
     "DEFAULT_CPU",
     "DEFAULT_DRIVER_DIRNAME",
@@ -292,6 +337,7 @@ __all__ = [
     "project_binary_base",
     "project_binary_dirname",
     "project_binary_extension",
+    "project_binary_filename_template",
     "project_binary_metadata_filename",
     "project_binary_section",
     "project_cpu",
@@ -299,6 +345,7 @@ __all__ = [
     "project_driver_filename_template",
     "project_rom_prefixes",
     "project_versions_dirpath",
+    "render_binary_filename",
     "render_driver_filename",
     "resolve_version_dirpath",
     "resolve_version_dirpath_for_project",

@@ -74,6 +74,7 @@ under the version directory.
    dir          = "rom"      # per-version subdirectory (default)
    extension    = "rom"      # binary file extension, no dot (default)
    metadata     = "rom.json" # metadata filename (default)
+   filename     = "{prefix}-{version_id}"  # basename template (default)
 
 * ``cpu`` — recognised values, case-insensitive: ``"6502"``,
   ``"nmos"`` (alias), ``"65c02"``, ``"65sc12"``, ``"65c12"``,
@@ -94,9 +95,25 @@ under the version directory.
   has no extension — as for a DFS program named literally ``KEYPAD``.
 * ``metadata`` — the metadata filename inside ``dir`` (its ``docs``
   list is consulted by ``fantasm lint``). Default ``"rom.json"``.
+* ``filename`` — a template for the binary's **basename** (the
+  ``extension``, if any, is appended afterwards). Default
+  ``"{prefix}-{version_id}"``. Recognised tokens, the same set as
+  ``[versions] driver_filename`` plus case variants:
+
+  * ``{prefix}`` / ``{prefix_upper}`` / ``{prefix_lower}``
+  * ``{version_id}`` — the id as written
+  * ``{version_id_no_dots}`` — the id with all ``.`` removed
+  * ``{version_id_upper}`` / ``{version_id_lower}``
+
+  Set ``filename = "{version_id_upper}"`` to keep an Acorn DFS-style
+  name — id ``keypad`` renders the on-disk binary ``KEYPAD`` — so an
+  extracted DFS program (and its ``KEYPAD.inf`` sidecar, which fantasm
+  simply ignores) stays intact. The ``.asm`` / ``.json`` disassembly
+  outputs always keep the ``{prefix}-{version_id}`` name; only the
+  binary basename follows this template.
 
 The binary for version ``V`` (prefix ``P``) resolves to
-``versions/P-V/<dir>/P-V[.<extension>]`` and its metadata to
+``versions/P-V/<dir>/<filename>[.<extension>]`` and its metadata to
 ``versions/P-V/<dir>/<metadata>``. With the defaults this is the
 historical ``rom/P-V.rom`` + ``rom/rom.json`` layout.
 
@@ -119,8 +136,9 @@ A DFS ``*RUN`` program disassembly, for example:
    cpu          = "6502"
    base_address = 0x1900
    dir          = "binary"
-   extension    = ""            # KEYPAD, not KEYPAD.rom
+   extension    = ""                   # KEYPAD, not KEYPAD.rom
    metadata     = "binary.json"
+   filename     = "{version_id_upper}" # id "keypad" -> binary "KEYPAD"
 
 
 ``[versions]``

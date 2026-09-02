@@ -660,7 +660,9 @@ def make_project_rom_loader(
     from .paths import (
         project_binary_dirname,
         project_binary_extension,
+        project_binary_filename_template,
         project_rom_prefixes,
+        render_binary_filename,
         resolve_version_dirpath_for_project,
     )
 
@@ -668,6 +670,7 @@ def make_project_rom_loader(
     binary_dirname = project_binary_dirname(project)
     extension = project_binary_extension(project)
     binary_suffix = f".{extension}" if extension else ""
+    filename_template = project_binary_filename_template(project)
     cache: dict[str, bytes] = {}
 
     def loader(version_id: str) -> bytes:
@@ -680,9 +683,11 @@ def make_project_rom_loader(
                 (p for p in prefixes if name == p or name.startswith(f"{p}-")),
                 prefixes[0] if prefixes else "",
             )
-            base = f"{matched_prefix}-{version_id}"
+            basename = render_binary_filename(
+                filename_template, matched_prefix, version_id
+            )
             binary_filepath = (
-                version_dirpath / binary_dirname / f"{base}{binary_suffix}"
+                version_dirpath / binary_dirname / f"{basename}{binary_suffix}"
             )
             if not binary_filepath.exists():
                 raise FileNotFoundError(

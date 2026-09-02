@@ -25,12 +25,14 @@ from .api.paths import (
     project_binary_base,
     project_binary_dirname,
     project_binary_extension,
+    project_binary_filename_template,
     project_binary_metadata_filename,
     project_cpu,
     project_driver_dirname,
     project_driver_filename_template,
     project_rom_prefixes,
     project_versions_dirpath,
+    render_binary_filename,
     render_driver_filename,
     resolve_version_dirpath,
 )
@@ -132,11 +134,16 @@ def resolve_version_files(
     extension = project_binary_extension(project_context)
     binary_suffix = f".{extension}" if extension else ""
     binary_dirpath = version_dirpath / binary_dirname
+    binary_basename = render_binary_filename(
+        project_binary_filename_template(project_context),
+        matched_prefix,
+        version_id,
+    )
     return VersionFiles(
         version_id=version_id,
         prefix=matched_prefix,
         version_dirpath=version_dirpath,
-        binary_filepath=binary_dirpath / f"{base}{binary_suffix}",
+        binary_filepath=binary_dirpath / f"{binary_basename}{binary_suffix}",
         metadata_filepath=(
             binary_dirpath
             / project_binary_metadata_filename(project_context)
