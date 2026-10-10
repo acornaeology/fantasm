@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
+import json
 import sys
 
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.asm_extract import parse_address
-from ..api.comment_check import run_checks
+from ..api.comment_check import ParentVersion, run_checks
+from ..api.driver_annotations import (
+    DriverAnnotation,
+    DriverParseError,
+    parse_driver_annotations,
+)
 from ..api.suggest import suggest_comments
-from ..cli_helpers import analysis_context
+from ..api.version_graph import (
+    VersionGraphError,
+    compose_chained_map,
+    load_version_graph,
+)
+from ..cli_helpers import (
+    AnalysisContext,
+    analysis_context,
+    make_binary_loader,
+    project_binary_base,
+    project_cpu,
+    resolve_version_files,
+)
 
 
 @click.group(help="Comment / annotation consistency checks.")
@@ -136,7 +154,12 @@ def comments_suggest(
     "check",
     help=(
         "Run the comment-vs-code consistency checks against the "
-        "version's JSON output."
+        "version's JSON output. When the version's driver script is "
+        "present, also flags inline comments keyed to an address "
+        "inside an instruction or data item. When the version has "
+        "parents in the version graph, also flags comments copied "
+        "from a parent at the same numeric address onto a different "
+        "instruction."
     ),
 )
 @click.argument("version_id")
@@ -153,19 +176,36 @@ def comments_suggest(
         "Exit non-zero if any HIGH-confidence finding is reported. "
         "Use as a CI gate: HIGH findings (wrong register / wrong "
         "branch target / wrong CR / wrong tube register / Markdown "
-        "link inside a backtick code span) almost certainly disagree "
-        "with the code."
+        "link inside a backtick code span / lo-hi byte of the wrong "
+        "address / inline comment inside an instruction) almost "
+        "certainly disagree with the code."
+    ),
+)
+@click.option(
+    "--parents/--no-parents",
+    "check_parents",
+    default=True,
+    help=(
+        "Compare against the version's parents in the version graph "
+        "(default on). --no-parents skips the comparison, which also "
+        "skips building the parent-to-child address map."
     ),
 )
 @report_output(reports={"findings": "Comment-check findings"})
 def comments_check(
-    version_id: str, sub_target: str | None, strict: bool
+    version_id: str, sub_target: str | None, strict: bool, check_parents: bool
 ) -> Reports:
     ctx = click.get_current_context()
     actx = analysis_context(ctx, version_id)
+    driver_annotations = _load_driver_annotations(actx)
+    parents = _load_parents(actx) if check_parents else []
     try:
         findings = run_checks(
-            actx.data, sub_target=sub_target, regions=actx.base_regions
+            actx.data,
+            sub_target=sub_target,
+            regions=actx.base_regions,
+            driver_annotations=driver_annotations,
+            parents=parents,
         )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
@@ -196,3 +236,60 @@ def comments_check(
             message=f["message"],
         )
     return Reports(findings=Report(data=table))
+
+
+def _load_driver_annotations(
+    actx: AnalysisContext,
+) -> list[DriverAnnotation] | None:
+    """The version's driver annotations, or ``None`` if it has no driver."""
+    driver_filepath = actx.files.driver_filepath
+    if not driver_filepath.exists():
+        return None
+    try:
+        return parse_driver_annotations(driver_filepath.read_text())
+    except DriverParseError as exc:
+        raise click.UsageError(f"{driver_filepath}: {exc}") from exc
+
+
+def _load_parents(actx: AnalysisContext) -> list[ParentVersion]:
+    """Each graph parent of the version whose JSON output exists.
+
+    The parent-to-child address map is attached when both binaries
+    load; without it the copied-comment check still runs, just
+    without saying where the parent's instruction moved to.
+    """
+    project_context = actx.project
+    try:
+        graph = load_version_graph(project_context)
+    except VersionGraphError:
+        return []
+    if actx.version_id not in graph:
+        return []
+
+    loader = make_binary_loader(project_context)
+    parents: list[ParentVersion] = []
+    for parent_id in graph.get(actx.version_id).parents:
+        json_filepath = resolve_version_files(
+            project_context, parent_id
+        ).json_filepath
+        if not json_filepath.exists():
+            continue
+        try:
+            address_map = compose_chained_map(
+                graph,
+                parent_id,
+                actx.version_id,
+                loader,
+                rom_base=project_binary_base(project_context),
+                cpu=project_cpu(project_context),
+            )
+        except (VersionGraphError, FileNotFoundError, click.UsageError):
+            address_map = None
+        parents.append(
+            ParentVersion(
+                version_id=parent_id,
+                data=json.loads(json_filepath.read_text()),
+                address_map=address_map,
+            )
+        )
+    return parents

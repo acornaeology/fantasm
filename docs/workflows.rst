@@ -80,6 +80,27 @@ address-links accidentally trapped inside a backtick code span
 (``\`MNEMONIC [label](address:HEX)\``` — the link won't render
 inside ``<code>``; see ``AUTHORING.md §1.3``).
 
+It also looks for comments that are well-formed but sit on the
+wrong line or describe the wrong value:
+
+* a lo/hi-byte claim (``X = lo byte of string at &8292``) whose
+  address doesn't match the immediate operand;
+* a quoted string placed at an address (``"SP." string at &8529``)
+  whose bytes say something else;
+* a character-literal operand (``LDA #')'``) described as an offset,
+  byte or address;
+* "Branch …"/"Loop until …" on an instruction that neither branches
+  nor tests, or "Load/Push/Pull …" on a branch;
+* code that is only ever read by indexed loads, never executed —
+  usually a data table traced as code after an always-taken branch;
+* inline comments keyed to an address *inside* an instruction or
+  data item, which render against the wrong line (needs the
+  version's driver script);
+* comments identical to the parent version's comment at the same
+  numeric address while the instruction there differs — a comment
+  carried over by address after the code moved (needs ``parents``
+  in the version graph; ``--no-parents`` skips it).
+
 .. code-block:: bash
 
    uv run fantasm comments check 1.0
@@ -88,7 +109,8 @@ inside ``<code>``; see ``AUTHORING.md §1.3``).
 
 ``--strict`` exits non-zero whenever any HIGH-confidence finding is
 reported (wrong register / wrong branch target / wrong CR / wrong
-tube register / Markdown link inside a code span). The report
+tube register / Markdown link inside a code span / lo-hi byte of the
+wrong address / inline comment inside an instruction). The report
 still renders before the exit, so CI logs show the offences.
 
 ``fantasm comments suggest`` looks for uncommented instructions and

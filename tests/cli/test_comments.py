@@ -8,6 +8,8 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from fantasm.cli import main
+from fantasm.cli_helpers import resolve_version_files
+from fantasm.config import resolve_project_context
 
 from ._helpers import add_version, init_project, write_minimal_disasm
 
@@ -200,3 +202,90 @@ def test_comments_suggest_invalid_label_hint(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "PATTERN=description" in result.output
+
+
+def _write_placement_project(tmp_path: Path, runner: CliRunner) -> None:
+    """Two versions, 2.0 a child of 1.0, with a misplaced comment each way."""
+    init_project(tmp_path, runner, "demo", "demo")
+    add_version(tmp_path, runner, "1.0", "demo")
+    add_version(tmp_path, runner, "2.0", "demo")
+    toml_filepath = tmp_path / "fantasm.toml"
+    toml_filepath.write_text(
+        toml_filepath.read_text()
+        + "\n[[versions.entry]]\nid = \"1.0\"\n"
+        + "\n[[versions.entry]]\nid = \"2.0\"\nparents = [\"1.0\"]\n"
+    )
+    roms = {
+        "1.0": bytes([0xA9, 0x64, 0x60]),          # LDA #&64 / RTS
+        "2.0": bytes([0xEA, 0xA9, 0x64, 0x60]),    # NOP / LDA #&64 / RTS
+    }
+    items = {
+        "1.0": [
+            {"addr": 0x8000, "type": "code", "mnemonic": "lda",
+             "operand": "#&64", "bytes": [0xA9, 0x64],
+             "comment_inline": "Load hundreds"},
+            {"addr": 0x8002, "type": "code", "mnemonic": "rts",
+             "bytes": [0x60]},
+        ],
+        "2.0": [
+            {"addr": 0x8000, "type": "code", "mnemonic": "nop",
+             "bytes": [0xEA], "comment_inline": "Load hundreds"},
+            {"addr": 0x8001, "type": "code", "mnemonic": "lda",
+             "operand": "#&64", "bytes": [0xA9, 0x64],
+             "comment_inline": "Divisor"},
+            {"addr": 0x8003, "type": "code", "mnemonic": "rts",
+             "bytes": [0x60]},
+        ],
+    }
+    for vid in ("1.0", "2.0"):
+        version_dirpath = tmp_path / "versions" / f"demo-{vid}"
+        (version_dirpath / "rom" / f"demo-{vid}.rom").write_bytes(roms[vid])
+        output_dirpath = version_dirpath / "output"
+        output_dirpath.mkdir(exist_ok=True)
+        (output_dirpath / f"demo-{vid}.json").write_text(json.dumps({
+            "meta": {"load_addr": 0x8000, "end_addr": 0x8000 + len(roms[vid])},
+            "items": items[vid],
+        }))
+
+    driver_filepath = resolve_version_files(
+        resolve_project_context(tmp_path), "2.0"
+    ).driver_filepath
+    driver_filepath.parent.mkdir(parents=True, exist_ok=True)
+    driver_filepath.write_text(
+        'd.comment(0x8000, "Load hundreds", align=Align.INLINE)\n'
+        'd.comment(0x8002, "Divisor", align=Align.INLINE)\n'
+    )
+
+
+def test_comments_check_flags_mid_item_and_copied_comments(
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    _write_placement_project(tmp_path, runner)
+    result = runner.invoke(
+        main,
+        [
+            "--project-root", str(tmp_path),
+            "comments", "check", "2.0", "--as", "tsv",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "mid_item_comment" in result.output
+    assert "Inline comment 'Divisor' (driver line 2) is inside LDA #&64" in result.output
+    assert "copied_comment" in result.output
+    assert "1.0 &8000 corresponds to &8001 here" in result.output
+
+
+def test_comments_check_no_parents(tmp_path: Path) -> None:
+    runner = CliRunner()
+    _write_placement_project(tmp_path, runner)
+    result = runner.invoke(
+        main,
+        [
+            "--project-root", str(tmp_path),
+            "comments", "check", "2.0", "--no-parents", "--as", "tsv",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "mid_item_comment" in result.output
+    assert "copied_comment" not in result.output

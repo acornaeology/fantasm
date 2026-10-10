@@ -17,12 +17,15 @@ fantasm. The presentational ``format_findings()`` and the top-level
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .driver_annotations import DriverAnnotation
 from .mos6502 import BRANCH_MNEMONICS
 
 
@@ -354,6 +357,198 @@ def check_desc_md_link_in_code_span(sub: dict) -> list[dict]:
 
 
 # Per-item checks, in order.
+# Byte-half claims on an immediate operand: "lo byte of X at &8292",
+# "High byte of &99DB handler", "Push return address low (&74)". The
+# "lo"/"hi" word must stand alone, not be part of an identifier such
+# as ``fs_crc_lo/hi``.
+_BYTE_HALF_RE = re.compile(r"(?<![\w/])(lo|low|hi|high)(?![\w/])", re.IGNORECASE)
+_HEX_WORD_RE = re.compile(r"&([0-9A-Fa-f]{4})\b")
+_PAREN_HEX_BYTE_RE = re.compile(r"\(&([0-9A-Fa-f]{2})\)")
+
+
+def _immediate_value(item: dict) -> int | None:
+    """The operand byte of a two-byte immediate-mode instruction."""
+    if not item.get("operand", "").startswith("#"):
+        return None
+    instruction_bytes = item.get("bytes", [])
+    if len(instruction_bytes) != 2:
+        return None
+    return instruction_bytes[1]
+
+
+def check_byte_of_address(item: dict, _context: dict) -> list[dict] | None:
+    """Comment calls an immediate the lo/hi byte of an address it isn't.
+
+    Fires on the first ``lo``/``low``/``hi``/``high`` word in the
+    comment that is followed by either a four-digit ``&XXXX`` (whose
+    matching half must equal the operand) or a parenthesised
+    two-digit ``(&XX)`` (which must equal the operand). Typical
+    cause: a comment copied from another version, where the address
+    differs. HIGH confidence for an explicit ``&XXXX``, MEDIUM for
+    ``(&XX)``.
+    """
+    value = _immediate_value(item)
+    if value is None:
+        return None
+    comment = item.get("comment_inline", "")
+    match = _BYTE_HALF_RE.search(comment)
+    if match is None:
+        return None
+    is_low = match.group(1).lower().startswith("l")
+    half = "low" if is_low else "high"
+    rest = comment[match.end():]
+    mnemonic = item.get("mnemonic", "").upper()
+    operand = item.get("operand", "")
+
+    word_match = _HEX_WORD_RE.search(rest)
+    if word_match:
+        address = int(word_match.group(1), 16)
+        expected = address & 0xFF if is_low else address >> 8
+        # A zero-page address equal to the operand names the byte's
+        # location rather than the address it is half of.
+        if expected != value and address != value:
+            return [{
+                "check": "byte_of_address",
+                "confidence": "HIGH",
+                "addr": item["addr"],
+                "message": (
+                    f"Comment says {half} byte of &{address:04X} (&{expected:02X}) "
+                    f"but instruction is {mnemonic} {operand} (&{value:02X})"
+                ),
+            }]
+        return None
+
+    byte_match = _PAREN_HEX_BYTE_RE.search(rest)
+    if byte_match:
+        claimed = int(byte_match.group(1), 16)
+        if claimed != value:
+            return [{
+                "check": "byte_of_address",
+                "confidence": "MEDIUM",
+                "addr": item["addr"],
+                "message": (
+                    f"Comment says {half} byte &{claimed:02X} "
+                    f"but instruction is {mnemonic} {operand} (&{value:02X})"
+                ),
+            }]
+    return None
+
+
+_QUOTED_AT_ADDRESS_RE = re.compile(
+    r"""(["'])((?:(?!\1).){2,}?)\1\s*(?:string\s+|text\s+)?at\s+&([0-9A-Fa-f]{4})\b"""
+)
+
+
+def check_quoted_string_address(item: dict, context: dict) -> list[dict] | None:
+    """Comment places a quoted string at an address that holds something else.
+
+    Matches ``"SP." string at &8529`` and similar, then compares the
+    quoted text against the bytes at that address (top bit ignored,
+    as Acorn strings often flag their last character). Addresses
+    outside the disassembled image are not checked. MEDIUM
+    confidence.
+    """
+    comment = item.get("comment_inline", "")
+    memory: dict[int, int] = context.get("memory", {})
+    findings: list[dict] = []
+    for match in _QUOTED_AT_ADDRESS_RE.finditer(comment):
+        text = match.group(2)
+        address = int(match.group(3), 16)
+        if address not in memory:
+            continue
+        actual = "".join(
+            chr(memory.get(address + offset, 0) & 0x7F)
+            for offset in range(len(text))
+        )
+        if actual != text:
+            findings.append({
+                "check": "quoted_string_address",
+                "confidence": "MEDIUM",
+                "addr": item["addr"],
+                "message": (
+                    f"Comment places {text!r} at &{address:04X} "
+                    f"but the bytes there read {actual!r}"
+                ),
+            })
+    return findings if findings else None
+
+
+_CHAR_LITERAL_OPERAND_RE = re.compile(r"""^#(["']).\1$""")
+_ADDRESS_WORDS_RE = re.compile(
+    r"\b(?:offset|lo(?:w)?\s+byte|hi(?:gh)?\s+byte|address|pointer|ptr)\b",
+    re.IGNORECASE,
+)
+
+
+def check_char_literal_operand(item: dict, _context: dict) -> list[dict] | None:
+    """Immediate rendered as a character but described as an address part.
+
+    ``LDA #')'`` with a comment about an offset, low byte or address
+    usually means the value is really something like
+    ``<(close_spool_cmd)`` and the character rendering is wrong.
+    MEDIUM confidence.
+    """
+    operand = item.get("operand", "")
+    if not _CHAR_LITERAL_OPERAND_RE.match(operand):
+        return None
+    comment = item.get("comment_inline", "")
+    match = _ADDRESS_WORDS_RE.search(comment)
+    if match is None:
+        return None
+    return [{
+        "check": "char_literal_operand",
+        "confidence": "MEDIUM",
+        "addr": item["addr"],
+        "message": (
+            f"Operand {operand} is rendered as a character but the comment "
+            f"describes it as {match.group(0)!r}"
+        ),
+    }]
+
+
+_BRANCH_PHRASING_RE = re.compile(
+    r"^(?:Branch\b|ALWAYS\s+branch|Loop\s+(?:back|until|while)\b)", re.IGNORECASE
+)
+_DATA_MOVE_PHRASING_RE = re.compile(r"^(?:Load|Push|Pull)\b", re.IGNORECASE)
+# 65C02 BRA is a branch too, though not in the NMOS-derived set.
+_BRANCHES = BRANCH_MNEMONICS | frozenset({"bra"})
+# Instructions whose comments legitimately talk about branching or
+# looping: control transfers, and the compares / counter steps that
+# set up a loop's exit test.
+_BRANCH_PHRASING_OK = _BRANCHES | frozenset({
+    "jmp", "jsr", "rts", "rti",
+    "cmp", "cpx", "cpy", "bit",
+    "dec", "inc", "dex", "dey", "inx", "iny",
+})
+
+
+def check_branch_phrasing(item: dict, _context: dict) -> list[dict] | None:
+    """Comment phrasing that belongs to a different kind of instruction.
+
+    "Branch ..." or "Loop until ..." on an instruction that neither
+    branches nor sets up a loop test, or "Load/Push/Pull ..." on a
+    branch, usually means the comment sits one instruction away from
+    where it belongs. MEDIUM confidence.
+    """
+    comment = item.get("comment_inline", "")
+    mnemonic = item.get("mnemonic", "")
+    if mnemonic not in _BRANCH_PHRASING_OK and _BRANCH_PHRASING_RE.match(comment):
+        kind = "branch"
+    elif mnemonic in _BRANCHES and _DATA_MOVE_PHRASING_RE.match(comment):
+        kind = "load/store"
+    else:
+        return None
+    return [{
+        "check": "branch_phrasing",
+        "confidence": "MEDIUM",
+        "addr": item["addr"],
+        "message": (
+            f"Comment has {kind} phrasing but instruction is "
+            f"{mnemonic.upper()} {item.get('operand', '')}".rstrip()
+        ),
+    }]
+
+
 ALL_CHECKS: tuple[Callable[[dict, dict], list[dict] | None], ...] = (
     check_reg_value,
     check_branch_target,
@@ -361,6 +556,10 @@ ALL_CHECKS: tuple[Callable[[dict, dict], list[dict] | None], ...] = (
     check_tube_register,
     check_stale_addr,
     check_md_link_in_code_span,
+    check_byte_of_address,
+    check_quoted_string_address,
+    check_char_literal_operand,
+    check_branch_phrasing,
 )
 
 
@@ -528,6 +727,194 @@ def check_chain_comments(
     return findings
 
 
+_INDEXED_OPERAND_RE = re.compile(r",\s*[xy]\)?$", re.IGNORECASE)
+_STORE_MNEMONICS = frozenset({"sta", "stx", "sty"})
+
+
+def check_code_read_as_data(
+    sorted_items: Sequence[dict],
+    *,
+    image_range: tuple[int, int] | None = None,
+) -> list[dict]:
+    """Code items that are only ever read as a table, never executed.
+
+    A code item whose every cross-reference is an indexed read
+    (``LDA table,Y``, ``CMP table,X``) is usually a data table the
+    tracer decoded as code, typically because it follows a branch
+    that is in fact always taken. Excluded, because reading
+    instruction bytes there is deliberate:
+
+    - subroutine entry points;
+    - items whose operand bytes carry their own labels (e.g. a ROM
+      header ``JMP`` whose address bytes are copied elsewhere);
+    - items outside ``image_range`` (``(start, end)`` exclusive), such
+      as code relocated into workspace;
+    - reads that are immediately followed by an indexed store (a
+      copy loop).
+
+    MEDIUM confidence.
+    """
+    by_addr = {item["addr"]: index for index, item in enumerate(sorted_items)}
+    findings: list[dict] = []
+    for item in sorted_items:
+        if item.get("type") != "code":
+            continue
+        references = item.get("references") or []
+        if not references or any(r.get("kind") != "indexed" for r in references):
+            continue
+        if item.get("sub_labels"):
+            continue
+        if image_range and not image_range[0] <= item["addr"] < image_range[1]:
+            continue
+        is_copy = False
+        for reference in references:
+            index = by_addr.get(reference["addr"])
+            if index is None or index + 1 >= len(sorted_items):
+                continue
+            following = sorted_items[index + 1]
+            if (
+                following.get("mnemonic") in _STORE_MNEMONICS
+                and _INDEXED_OPERAND_RE.search(following.get("operand", ""))
+            ):
+                is_copy = True
+                break
+        if is_copy:
+            continue
+        readers = ", ".join(f"&{r['addr']:04X}" for r in references)
+        findings.append({
+            "check": "code_read_as_data",
+            "confidence": "MEDIUM",
+            "addr": item["addr"],
+            "message": (
+                f"Code ({item.get('mnemonic', '').upper()} "
+                f"{item.get('operand', '')}".rstrip()
+                + f") is only referenced by indexed reads at {readers}; "
+                "possibly a table decoded as code"
+            ),
+        })
+    return findings
+
+
+def check_mid_item_comments(
+    sorted_items: Sequence[dict],
+    annotations: Iterable[DriverAnnotation],
+) -> list[dict]:
+    """Inline comments keyed to an address inside an item.
+
+    The disassembler attaches such a comment to the item that covers
+    the address, so it renders against the wrong line, usually one
+    or two instructions away from what it describes. Typical cause:
+    annotations carried over from a version whose instructions start
+    a byte or two earlier. Needs the driver's annotations, since the
+    JSON records only the item the comment ended up on.
+
+    HIGH confidence inside an instruction, MEDIUM inside data.
+    """
+    starts = [item["addr"] for item in sorted_items]
+    findings: list[dict] = []
+    for annotation in annotations:
+        if annotation.kind != "comment" or not annotation.inline:
+            continue
+        index = bisect.bisect_right(starts, annotation.address) - 1
+        if index < 0:
+            continue
+        item = sorted_items[index]
+        start = item["addr"]
+        length = len(item.get("bytes", []))
+        if not start < annotation.address < start + length:
+            continue
+        is_code = item.get("type") == "code"
+        if is_code:
+            what = f"{item.get('mnemonic', '').upper()} {item.get('operand', '')}".rstrip()
+        else:
+            what = f"{length}-byte {item.get('type', 'data')} item"
+        findings.append({
+            "check": "mid_item_comment",
+            "confidence": "HIGH" if is_code else "MEDIUM",
+            "addr": annotation.address,
+            "message": (
+                f"Inline comment {annotation.text!r} (driver line "
+                f"{annotation.line_number}) is inside {what} at &{start:04X}"
+            ),
+        })
+    return findings
+
+
+@dataclass(frozen=True)
+class ParentVersion:
+    """A parent version's disassembly, for :func:`check_copied_comments`.
+
+    ``address_map`` is an optional parent→child confidence map
+    (``{parent_addr: (child_addr, confidence)}``, as produced by
+    :func:`~fantasm.api.version_graph.compose_chained_map`); when
+    given, findings say where the parent's annotated instruction
+    lives in the child.
+    """
+
+    version_id: str
+    data: dict
+    address_map: dict[int, tuple[int, int]] | None = None
+
+
+# Comments that are deliberately repeated on unrelated instructions.
+_GENERIC_COMMENTS = frozenset({"(continued)"})
+
+
+def _describe_item(item: dict) -> str:
+    if item.get("type") == "code":
+        return f"{item.get('mnemonic', '').upper()} {item.get('operand', '')}".rstrip()
+    return f"{item.get('type', 'data')} data"
+
+
+def check_copied_comments(
+    sorted_items: Sequence[dict],
+    parent: ParentVersion,
+) -> list[dict]:
+    """Inline comments copied by numeric address onto different code.
+
+    When a version is bootstrapped from its parent, an annotation can
+    keep the parent's address after the code beneath it has moved.
+    The address is still a valid item start, so lint is satisfied,
+    but the comment describes a different instruction. Flags inline
+    comments whose text matches the parent's comment at the *same*
+    address while the instruction (or item type) there differs.
+
+    MEDIUM confidence: either side may be the wrong one.
+    """
+    parent_by_addr = {item["addr"]: item for item in parent.data.get("items", [])}
+    findings: list[dict] = []
+    for item in sorted_items:
+        comment = item.get("comment_inline")
+        if not comment or comment in _GENERIC_COMMENTS:
+            continue
+        parent_item = parent_by_addr.get(item["addr"])
+        if parent_item is None or parent_item.get("comment_inline") != comment:
+            continue
+        if (item.get("type"), item.get("mnemonic")) == (
+            parent_item.get("type"), parent_item.get("mnemonic")
+        ):
+            continue
+        message = (
+            f"Comment {comment!r} is identical to {parent.version_id}'s at "
+            f"the same address, where {parent.version_id} has "
+            f"{_describe_item(parent_item)}; here it is {_describe_item(item)}"
+        )
+        if parent.address_map is not None:
+            mapped = parent.address_map.get(item["addr"])
+            if mapped is not None and mapped[0] != item["addr"]:
+                message += (
+                    f" ({parent.version_id} &{item['addr']:04X} corresponds "
+                    f"to &{mapped[0]:04X} here)"
+                )
+        findings.append({
+            "check": "copied_comment",
+            "confidence": "MEDIUM",
+            "addr": item["addr"],
+            "message": message,
+        })
+    return findings
+
+
 def build_known_addrs(
     data: dict,
     *,
@@ -568,6 +955,8 @@ def run_checks(
     sub_target: str | None = None,
     *,
     regions: Iterable[tuple[int, int]] = (),
+    driver_annotations: Iterable[DriverAnnotation] | None = None,
+    parents: Iterable[ParentVersion] = (),
 ) -> list[dict]:
     """Run every check against ``data`` and return a flat list of findings.
 
@@ -578,12 +967,22 @@ def run_checks(
     ``regions`` extends the "known address" set used by stale-addr
     checks; see :func:`build_known_addrs`. Pass the version's
     effective + external regions for project-aware behaviour.
+
+    ``driver_annotations`` (from
+    :func:`~fantasm.api.driver_annotations.parse_driver_annotations`)
+    enables :func:`check_mid_item_comments`; ``parents`` enables
+    :func:`check_copied_comments` against each parent version.
     """
     items = data["items"]
     items_by_addr = {item["addr"]: item for item in items}
     sorted_items = sorted(items, key=lambda i: i["addr"])
 
     known_addrs = build_known_addrs(data, regions=regions)
+    memory = {
+        item["addr"] + offset: value
+        for item in items
+        for offset, value in enumerate(item.get("bytes", []))
+    }
 
     sub_range: tuple[int, int | None] | None = None
     if sub_target:
@@ -625,6 +1024,7 @@ def run_checks(
             "prev_item": prev_item,
             "known_addrs": known_addrs,
             "items_by_addr": items_by_addr,
+            "memory": memory,
         }
 
         for check_fn in ALL_CHECKS:
@@ -661,6 +1061,27 @@ def run_checks(
 
     findings.extend(check_chain_comments(sorted_items, sub_range=sub_range))
 
+    meta = data.get("meta", {})
+    image_range: tuple[int, int] | None = None
+    if "load_addr" in meta and "end_addr" in meta:
+        image_range = (meta["load_addr"], meta["end_addr"])
+    whole_item_findings = check_code_read_as_data(
+        sorted_items, image_range=image_range
+    )
+    if driver_annotations is not None:
+        whole_item_findings.extend(
+            check_mid_item_comments(sorted_items, driver_annotations)
+        )
+    for parent in parents:
+        whole_item_findings.extend(check_copied_comments(sorted_items, parent))
+    if sub_range:
+        start, end = sub_range
+        whole_item_findings = [
+            f for f in whole_item_findings
+            if f["addr"] >= start and (end is None or f["addr"] < end)
+        ]
+    findings.extend(whole_item_findings)
+
     return findings
 
 
@@ -668,16 +1089,24 @@ __all__ = [
     "ALL_CHECKS",
     "CR_ADDRESSES",
     "IMM_REG_MNEMONICS",
+    "ParentVersion",
     "TUBE_REGISTERS",
     "build_known_addrs",
     "check_block_md_link_in_code_span",
     "check_block_stale_addr",
+    "check_branch_phrasing",
     "check_branch_target",
+    "check_byte_of_address",
     "check_chain_comments",
+    "check_char_literal_operand",
+    "check_code_read_as_data",
+    "check_copied_comments",
     "check_cr_value",
     "check_desc_md_link_in_code_span",
     "check_desc_stale_addr",
     "check_md_link_in_code_span",
+    "check_mid_item_comments",
+    "check_quoted_string_address",
     "check_reg_value",
     "check_stale_addr",
     "check_tube_register",
