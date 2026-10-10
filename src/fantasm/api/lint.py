@@ -31,102 +31,46 @@ import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
-
-_COMMENT_HEAD_RE = re.compile(r"comment\(\s*(0x[0-9A-Fa-f]+)")
-_SUBROUTINE_HEAD_RE = re.compile(r"subroutine\(\s*(0x[0-9A-Fa-f]+)")
-_LABEL_HEAD_RE = re.compile(r"label\(\s*(0x[0-9A-Fa-f]+)")
-
-# Within an accumulated multi-line call, find the second positional
-# argument (the name string). \s spans newlines so multi-line calls
-# work without further glue.
-_NAME_FROM_CALL_RE = re.compile(
-    r'^[a-z]+\(\s*0x[0-9A-Fa-f]+\s*,\s*"([^"]*)"'
-)
-
-
-def _accumulate_call(lines: Sequence[str], start_index: int) -> str:
-    """Concatenate lines starting at ``start_index`` until parens balance."""
-    call_text = lines[start_index]
-    paren_depth = call_text.count("(") - call_text.count(")")
-    j = start_index + 1
-    while paren_depth > 0 and j < len(lines):
-        call_text += "\n" + lines[j]
-        paren_depth += lines[j].count("(") - lines[j].count(")")
-        j += 1
-    return call_text
-
-
-def _extract_name(call_text: str) -> str | None:
-    """Extract the positional ``name`` argument from an accumulated call."""
-    match = _NAME_FROM_CALL_RE.match(call_text.lstrip())
-    return match.group(1) if match else None
+from .driver_annotations import parse_driver_annotations
 
 
 def extract_annotations(driver_text: str) -> list[dict]:
     """Extract all annotation addresses from driver-script text.
 
-    Recognises ``comment(0xADDR, ...)``, ``subroutine(0xADDR, ...)``,
-    and ``label(0xADDR, ...)`` calls — including calls that wrap
-    onto multiple lines (the function walks forward until parens
-    balance). Returns dicts with keys ``kind``, ``address``,
-    ``line_number`` (1-based, of the opening line), ``detail``, and
-    ``name`` (``None`` when the call uses kwargs only or wraps in a
-    way that hides the name).
+    Recognises ``comment``, ``subroutine`` and ``label`` calls in both
+    the py8dis (bare function) and dasmos (``d.<method>``) dialects,
+    including calls that span several lines, via
+    :func:`~fantasm.api.driver_annotations.parse_driver_annotations`.
+    Calls whose address isn't a literal are skipped. Returns dicts
+    with keys ``kind``, ``address``, ``line_number`` (1-based, of the
+    opening line), ``detail``, and ``name`` (``None`` for comments,
+    or when the name isn't a string literal).
 
     For ``subroutine`` calls, ``detail`` is ``"entry_point"`` unless
-    the full call (across continuation lines) contains
-    ``is_entry_point=False``, in which case it is ``"metadata_only"``
-    (the call is documentation-only and the address shouldn't be
-    expected to appear in the disassembler output).
+    the call passes ``is_entry_point=False``, in which case it is
+    ``"metadata_only"`` (the call is documentation-only and the
+    address shouldn't be expected to appear in the disassembler
+    output).
+
+    Raises :class:`~fantasm.api.driver_annotations.DriverParseError`
+    when the script is not valid Python.
     """
-    lines = driver_text.splitlines()
     annotations: list[dict] = []
-
-    for index, line in enumerate(lines):
-        stripped = line.lstrip()
-        line_number = index + 1
-
-        match = _COMMENT_HEAD_RE.match(stripped)
-        if match:
-            annotations.append(
-                {
-                    "kind": "comment",
-                    "address": int(match.group(1), 16),
-                    "line_number": line_number,
-                    "detail": None,
-                    "name": None,
-                }
+    for annotation in parse_driver_annotations(driver_text):
+        detail: str | None = None
+        if annotation.kind == "subroutine":
+            detail = (
+                "entry_point" if annotation.is_entry_point else "metadata_only"
             )
-            continue
-
-        match = _SUBROUTINE_HEAD_RE.match(stripped)
-        if match:
-            call_text = _accumulate_call(lines, index)
-            is_entry_point = "is_entry_point=False" not in call_text
-            annotations.append(
-                {
-                    "kind": "subroutine",
-                    "address": int(match.group(1), 16),
-                    "line_number": line_number,
-                    "detail": "entry_point" if is_entry_point else "metadata_only",
-                    "name": _extract_name(call_text),
-                }
-            )
-            continue
-
-        match = _LABEL_HEAD_RE.match(stripped)
-        if match:
-            call_text = _accumulate_call(lines, index)
-            annotations.append(
-                {
-                    "kind": "label",
-                    "address": int(match.group(1), 16),
-                    "line_number": line_number,
-                    "detail": None,
-                    "name": _extract_name(call_text),
-                }
-            )
-
+        annotations.append(
+            {
+                "kind": annotation.kind,
+                "address": annotation.address,
+                "line_number": annotation.line_number,
+                "detail": detail,
+                "name": annotation.name,
+            }
+        )
     return annotations
 
 

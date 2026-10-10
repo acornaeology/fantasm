@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
+from ..api.driver_annotations import DriverParseError
 from ..api.backfill import diff_annotations
 from ..api.version_graph import (
     NoPathError,
@@ -141,12 +142,15 @@ def annotations_diff(
     except (VersionNotInGraphError, NoPathError) as exc:
         raise click.UsageError(str(exc)) from exc
 
-    diffs = diff_annotations(
-        source_driver.read_text(),
-        target_driver.read_text(),
-        confidence_map,
-        threshold=threshold,
-    )
+    try:
+        diffs = diff_annotations(
+            source_driver.read_text(),
+            target_driver.read_text(),
+            confidence_map,
+            threshold=threshold,
+        )
+    except DriverParseError as exc:
+        raise click.UsageError(str(exc)) from exc
     if kind:
         kind_set = {k.lower() for k in kind}
         diffs = [d for d in diffs if d.kind in kind_set]

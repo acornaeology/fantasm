@@ -60,8 +60,14 @@ from .backfill import (
     group_logical_statements,
     parse_annotations,
     propose_propagations,
+    subroutine_name,
     translate_address_in_text,
     translate_subroutine,
+)
+from .driver_annotations import (
+    DriverAnnotation,
+    DriverParseError,
+    parse_driver_annotations,
 )
 from .blockmatch import (
     RelocatedBlock,

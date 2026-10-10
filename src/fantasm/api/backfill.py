@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import difflib
 import re
+import textwrap
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .blockmatch import disassemble_to_opcodes
+from .driver_annotations import DriverParseError, parse_driver_annotations
 from .paths import (
     DEFAULT_BASE_ADDRESS,
     DEFAULT_CPU,
@@ -138,7 +140,9 @@ def build_confidence_map(
 # --- Annotation parsing -------------------------------------------
 
 
-# Regex for inline comments: comment(0xADDR, "text", inline=True)
+# Legacy py8dis-only patterns, kept for API compatibility. Annotation
+# parsing now goes through parse_driver_annotations, which also reads
+# the dasmos ``d.comment(..., align=Align.INLINE)`` shape.
 RE_INLINE_COMMENT = re.compile(
     r'^comment\(0x([0-9A-Fa-f]+),\s*"((?:[^"\\]|\\.)*)"\s*,\s*inline\s*=\s*True\)',
     re.MULTILINE,
@@ -221,6 +225,12 @@ def parse_annotations(
 ]:
     """Parse driver-script text and return its annotations.
 
+    Accepts both the py8dis (``comment(0x..., inline=True)``) and
+    dasmos (``d.comment(0x..., align=Align.INLINE)``) call shapes via
+    :func:`~fantasm.api.driver_annotations.parse_driver_annotations`.
+    Only *inline* comments are collected; block comments are not
+    propagated.
+
     Returns ``(inline_comments, labels, label_names, subroutines)``:
 
     - ``inline_comments``: ``{addr -> [(text, full_line), ...]}``
@@ -228,42 +238,42 @@ def parse_annotations(
     - ``label_names``: set of every label name encountered
     - ``subroutines``: ``{addr -> full_statement_text}`` (may be
       multi-line)
-    """
-    lines = script_text.split("\n")
-    groups = group_logical_statements(lines)
 
+    Raises :class:`~fantasm.api.driver_annotations.DriverParseError`
+    when the script is not valid Python.
+    """
     inline_comments: dict[int, list[tuple[str, str]]] = {}
     labels: dict[int, tuple[str, str]] = {}
     label_names: set[str] = set()
     subroutines: dict[int, str] = {}
 
-    for _start, _end, group_lines in groups:
-        first_line = group_lines[0].strip()
-        full_text = "\n".join(group_lines)
-
-        match = RE_INLINE_COMMENT.match(first_line)
-        if match:
-            addr = int(match.group(1), 16)
-            text = match.group(2)
-            inline_comments.setdefault(addr, []).append(
-                (text, group_lines[0].rstrip())
-            )
-            continue
-
-        match = RE_LABEL.match(first_line)
-        if match:
-            addr = int(match.group(1), 16)
-            name = match.group(2)
-            labels[addr] = (name, group_lines[0].rstrip())
-            label_names.add(name)
-            continue
-
-        match = RE_SUBROUTINE.match(first_line)
-        if match:
-            addr = int(match.group(1), 16)
-            subroutines[addr] = full_text
+    for annotation in parse_driver_annotations(script_text):
+        address = annotation.address
+        if annotation.kind == "comment":
+            if annotation.inline and annotation.text is not None:
+                inline_comments.setdefault(address, []).append(
+                    (annotation.text, annotation.source.rstrip())
+                )
+        elif annotation.kind == "label":
+            if annotation.name is not None:
+                labels[address] = (annotation.name, annotation.source.rstrip())
+                label_names.add(annotation.name)
+        elif annotation.kind == "subroutine":
+            subroutines[address] = annotation.source
 
     return inline_comments, labels, label_names, subroutines
+
+
+def subroutine_name(full_text: str) -> str | None:
+    """Return the name argument of a ``subroutine()`` call's source text."""
+    try:
+        annotations = parse_driver_annotations(textwrap.dedent(full_text))
+    except DriverParseError:
+        return None
+    for annotation in annotations:
+        if annotation.kind == "subroutine":
+            return annotation.name
+    return None
 
 
 def translate_address_in_text(text: str, old_addr: int, new_addr: int) -> str:
@@ -417,13 +427,7 @@ def propose_propagations(
             skipped_target_has_annotation += 1
             continue
         translated = translate_subroutine(full_text, src_addr, target_addr)
-        match = RE_SUBROUTINE.search(translated)
-        sub_name: str | None = None
-        name_match = re.search(
-            r'subroutine\(0x[0-9A-Fa-f]+,\s*"([^"]+)"', translated
-        )
-        if name_match:
-            sub_name = name_match.group(1)
+        sub_name = subroutine_name(translated)
         candidates.append(
             PropagationCandidate(
                 source_addr=src_addr,
@@ -584,10 +588,7 @@ def diff_annotations(
     for src_addr, src_full in src_subs.items():
         target_addr, confidence = _resolve(src_addr)
         # Source name from the call's first quoted arg.
-        src_name_match = re.search(
-            r'subroutine\(0x[0-9A-Fa-f]+,\s*"([^"]+)"', src_full
-        )
-        src_name = src_name_match.group(1) if src_name_match else "(unnamed)"
+        src_name = subroutine_name(src_full) or "(unnamed)"
         if target_addr is None:
             diffs.append(
                 AnnotationDiff(
@@ -615,12 +616,7 @@ def diff_annotations(
                 )
             )
             continue
-        tgt_name_match = re.search(
-            r'subroutine\(0x[0-9A-Fa-f]+,\s*"([^"]+)"', tgt_full
-        )
-        tgt_name = (
-            tgt_name_match.group(1) if tgt_name_match else "(unnamed)"
-        )
+        tgt_name = subroutine_name(tgt_full) or "(unnamed)"
         if src_name != tgt_name:
             diffs.append(
                 AnnotationDiff(
@@ -823,6 +819,7 @@ __all__ = [
     "parse_annotations",
     "propose_propagations",
     "propose_translations",
+    "subroutine_name",
     "translate_address_in_text",
     "translate_subroutine",
 ]

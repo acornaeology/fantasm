@@ -38,6 +38,38 @@ label(0x8200)
 '''
 
 
+DASMOS_DRIVER = '''\
+d.comment(0x8005, "first instruction", align=Align.INLINE)
+d.subroutine(
+    0x8000,
+    "init",
+    title="Initialise",
+)
+d.subroutine(0x8050, "load_data", is_entry_point=False)
+d.label(0x8100, "data_table")
+'''
+
+
+class TestExtractAnnotationsDasmos:
+    def test_extracts_receiver_method_calls(self) -> None:
+        anns = extract_annotations(DASMOS_DRIVER)
+        assert [(a["kind"], a["address"], a["line_number"]) for a in anns] == [
+            ("comment", 0x8005, 1),
+            ("subroutine", 0x8000, 2),
+            ("subroutine", 0x8050, 7),
+            ("label", 0x8100, 8),
+        ]
+
+    def test_names_and_details(self) -> None:
+        anns = extract_annotations(DASMOS_DRIVER)
+        assert [(a["name"], a["detail"]) for a in anns] == [
+            (None, None),
+            ("init", "entry_point"),
+            ("load_data", "metadata_only"),
+            ("data_table", None),
+        ]
+
+
 class TestExtractAnnotations:
     def test_extracts_kinds(self) -> None:
         anns = extract_annotations(SAMPLE_DRIVER)

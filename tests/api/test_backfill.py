@@ -168,6 +168,36 @@ class TestParseAnnotations:
         assert "hook=None" in subs[0x8020]
 
 
+DASMOS_SCRIPT = '''\
+d.comment(0x8000, "first inline", align=Align.INLINE)
+d.comment(0x8001, "block comment")
+d.label(0x8010, "data_table")
+d.subroutine(
+    0x8020,
+    "init",
+    title="Initialise",
+)
+'''
+
+
+class TestParseAnnotationsDasmos:
+    def test_inline_comments_only(self) -> None:
+        comments, _, _, _ = parse_annotations(DASMOS_SCRIPT)
+        assert list(comments) == [0x8000]
+        assert comments[0x8000][0][0] == "first inline"
+
+    def test_labels(self) -> None:
+        _, labels, label_names, _ = parse_annotations(DASMOS_SCRIPT)
+        assert labels[0x8010][0] == "data_table"
+        assert label_names == {"data_table"}
+
+    def test_subroutine_address_on_following_line(self) -> None:
+        _, _, _, subs = parse_annotations(DASMOS_SCRIPT)
+        assert list(subs) == [0x8020]
+        assert subs[0x8020].startswith("d.subroutine(")
+        assert 'title="Initialise"' in subs[0x8020]
+
+
 # --- translate_* ---------------------------------------------------
 
 
@@ -308,6 +338,34 @@ class TestProposePropagations:
 
 
 # --- diff_annotations -------------------------------------------
+
+
+class TestProposePropagationsDasmos:
+    def test_propagates_all_kinds(self) -> None:
+        confidence_map = {
+            0x8000: (0x9000, 50),
+            0x8010: (0x9010, 50),
+            0x8020: (0x9020, 50),
+        }
+        report = propose_propagations(
+            DASMOS_SCRIPT, "", confidence_map, threshold=5
+        )
+        by_kind = {c.kind: c for c in report.candidates}
+        assert set(by_kind) == {"comment", "label", "subroutine"}
+        assert by_kind["subroutine"].name == "init"
+        assert "    0x9020," in by_kind["subroutine"].text
+
+    def test_existing_dasmos_target_annotations_skipped(self) -> None:
+        confidence_map = {
+            0x8000: (0x8000, 50),
+            0x8010: (0x8010, 50),
+            0x8020: (0x8020, 50),
+        }
+        report = propose_propagations(
+            DASMOS_SCRIPT, DASMOS_SCRIPT, confidence_map, threshold=5
+        )
+        assert report.candidates == ()
+        assert report.skipped_target_has_annotation == 3
 
 
 class TestDiffAnnotations:

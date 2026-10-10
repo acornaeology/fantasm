@@ -156,6 +156,12 @@ Annotation backfill across versions
 .. automodule:: fantasm.api.backfill
 
 
+Driver-script annotation parsing
+--------------------------------
+
+.. automodule:: fantasm.api.driver_annotations
+
+
 Driver-script address sorting
 -----------------------------
 

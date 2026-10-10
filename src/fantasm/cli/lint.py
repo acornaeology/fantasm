@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
+from ..api.driver_annotations import DriverParseError
 from ..api.lint import (
     address_in_ranges,
     extract_annotations,
@@ -89,7 +90,10 @@ def lint_annotations(
     # share the same JSON shape). Workspace regions outside that
     # set still come from the version graph (effective_regions).
     valid_addresses = valid_addresses_from_data(actx.data)
-    annotations = extract_annotations(driver_filepath.read_text())
+    try:
+        annotations = extract_annotations(driver_filepath.read_text())
+    except DriverParseError as exc:
+        raise click.UsageError(f"{driver_filepath}: {exc}") from exc
 
     unmapped = [
         a for a in annotations

@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
+from ..api.driver_annotations import DriverParseError
 from ..api.backfill import propose_propagations
 from ..api.version_graph import (
     NoPathError,
@@ -138,12 +139,15 @@ def backfill_cmd(
         raise click.UsageError(str(exc)) from exc
 
     path = graph.find_path(source_version, target_version)
-    propagation = propose_propagations(
-        source_driver.read_text(),
-        target_driver.read_text(),
-        confidence_map,
-        threshold=threshold,
-    )
+    try:
+        propagation = propose_propagations(
+            source_driver.read_text(),
+            target_driver.read_text(),
+            confidence_map,
+            threshold=threshold,
+        )
+    except DriverParseError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     table = (
         TableContent(
