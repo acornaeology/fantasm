@@ -332,3 +332,42 @@ class TestRunChecksPlacement:
         anns = parse_driver_annotations('comment(0x8001, "Stray", inline=True)\n')
         findings = run_checks(data, "8004", driver_annotations=anns)
         assert all(f["addr"] >= 0x8004 for f in findings)
+
+
+class TestPlacementFalsePositives:
+    def test_biased_base_read_is_clean(self) -> None:
+        items = [
+            _code(0x9A69, "lda", "imm_op_dispatch_lo - &81,y", [0xB9, 0x77, 0x99]),
+            _code(0x9A6C, "pha", "", [0x48]),
+            _code(0x99F8, "bit", "tx_flags", [0x2C, 0x00, 0x0D],
+                  references=[{"addr": 0x9A69, "kind": "indexed"}]),
+        ]
+        assert check_code_read_as_data(sorted(items, key=lambda i: i["addr"])) == []
+
+    def test_register_variant_is_clean(self) -> None:
+        parent = ParentVersion("4.08.53", {"items": [
+            _code(0x99AB, "dey", "", [0x88], "Decrement counter"),
+        ]})
+        items = [_code(0x99AB, "dex", "", [0xCA], "Decrement counter")]
+        assert check_copied_comments(items, parent) == []
+
+    def test_store_described_as_write_is_clean(self) -> None:
+        parent = ParentVersion("4.18", {"items": [
+            _code(0x87B4, "lda", "tx_dst_net", [0xAD, 0x00, 0x0D],
+                  "Write dest network to TX FIFO"),
+        ]})
+        items = [_code(0x87B4, "sta", "econet_data_continue_frame",
+                       [0x8D, 0xA2, 0xFE], "Write dest network to TX FIFO")]
+        assert check_copied_comments(items, parent) == []
+
+    def test_base_of_indexed_store_is_clean(self) -> None:
+        items = [
+            _code(0xA9F3, "lda", "hazel_minus_1,y", [0xB9, 0xFF, 0xBF]),
+            _code(0xA9F6, "pha", "", [0x48]),
+            _code(0xAA08, "sta", "hazel_minus_1,y", [0x99, 0xFF, 0xBF]),
+            _code(0xAA0B, "rts", "", [0x60]),
+            _code(0xBFFF, "rts", "", [0x60], labels=["hazel_minus_1"],
+                  references=[{"addr": 0xA9F3, "kind": "indexed"},
+                              {"addr": 0xAA08, "kind": "indexed"}]),
+        ]
+        assert check_code_read_as_data(items) == []

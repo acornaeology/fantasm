@@ -731,6 +731,37 @@ _INDEXED_OPERAND_RE = re.compile(r",\s*[xy]\)?$", re.IGNORECASE)
 _STORE_MNEMONICS = frozenset({"sta", "stx", "sty"})
 
 
+# An indexed operand written as ``symbol - &81,Y``: the base is biased
+# so that the first valid index lands on the table, and the raw base
+# address falls in whatever precedes it, often code.
+_BIASED_OPERAND_RE = re.compile(r"^\w+\s*[-+]\s*[&$]?[0-9A-Fa-f]+\s*,")
+
+
+def _indexed_read_is_explained(
+    sorted_items: Sequence[dict],
+    by_addr: dict[int, int],
+    reference: dict,
+) -> bool:
+    """True when an indexed read of code is deliberate, not a mis-trace.
+
+    Either the read uses a biased base (``table - &81,Y``), or it is
+    immediately followed by an indexed store (a copy loop).
+    """
+    index = by_addr.get(reference["addr"])
+    if index is None:
+        return False
+    reader = sorted_items[index]
+    if _BIASED_OPERAND_RE.match(reader.get("operand", "")):
+        return True
+    if index + 1 >= len(sorted_items):
+        return False
+    following = sorted_items[index + 1]
+    return bool(
+        following.get("mnemonic") in _STORE_MNEMONICS
+        and _INDEXED_OPERAND_RE.search(following.get("operand", ""))
+    )
+
+
 def check_code_read_as_data(
     sorted_items: Sequence[dict],
     *,
@@ -750,7 +781,12 @@ def check_code_read_as_data(
     - items outside ``image_range`` (``(start, end)`` exclusive), such
       as code relocated into workspace;
     - reads that are immediately followed by an indexed store (a
-      copy loop).
+      copy loop), or that use a biased base such as
+      ``table - &81,Y``, whose raw address deliberately falls before
+      the table;
+    - items also used as the base of an indexed store, which must be
+      addressing RAM beyond the item (e.g. ``hazel_minus_1,Y`` on the
+      ROM's last byte), not a table in it.
 
     MEDIUM confidence.
     """
@@ -766,19 +802,16 @@ def check_code_read_as_data(
             continue
         if image_range and not image_range[0] <= item["addr"] < image_range[1]:
             continue
-        is_copy = False
-        for reference in references:
-            index = by_addr.get(reference["addr"])
-            if index is None or index + 1 >= len(sorted_items):
-                continue
-            following = sorted_items[index + 1]
-            if (
-                following.get("mnemonic") in _STORE_MNEMONICS
-                and _INDEXED_OPERAND_RE.search(following.get("operand", ""))
-            ):
-                is_copy = True
-                break
-        if is_copy:
+        if any(
+            sorted_items[by_addr[r["addr"]]].get("mnemonic") in _STORE_MNEMONICS
+            for r in references
+            if r["addr"] in by_addr
+        ):
+            continue
+        if all(
+            _indexed_read_is_explained(sorted_items, by_addr, reference)
+            for reference in references
+        ):
             continue
         readers = ", ".join(f"&{r['addr']:04X}" for r in references)
         findings.append({
@@ -859,6 +892,39 @@ class ParentVersion:
 # Comments that are deliberately repeated on unrelated instructions.
 _GENERIC_COMMENTS = frozenset({"(continued)"})
 
+# Instructions that differ only in which register they use. A comment
+# such as "Decrement counter" fits either member of a family, so a
+# change within one isn't evidence of a misplaced comment.
+_REGISTER_FAMILIES = {
+    mnemonic: family
+    for family, members in {
+        "inc": ("inx", "iny"),
+        "dec": ("dex", "dey"),
+        "load": ("lda", "ldx", "ldy"),
+        "store": ("sta", "stx", "sty", "stz"),
+        "compare": ("cmp", "cpx", "cpy"),
+        "push": ("pha", "phx", "phy"),
+        "pull": ("pla", "plx", "ply"),
+        "from_a": ("tax", "tay"),
+        "to_a": ("txa", "tya"),
+    }.items()
+    for mnemonic in members
+}
+_STORE_PHRASING_RE = re.compile(r"^(?:Write|Store)\b", re.IGNORECASE)
+
+
+def _comment_fits_both(item: dict, parent_item: dict, comment: str) -> bool:
+    """True when the comment plausibly describes both instructions."""
+    mnemonic = item.get("mnemonic")
+    family = _REGISTER_FAMILIES.get(mnemonic)
+    if family is not None and family == _REGISTER_FAMILIES.get(
+        parent_item.get("mnemonic")
+    ):
+        return True
+    return mnemonic in _STORE_MNEMONICS | {"stz"} and bool(
+        _STORE_PHRASING_RE.match(comment)
+    )
+
 
 def _describe_item(item: dict) -> str:
     if item.get("type") == "code":
@@ -878,6 +944,9 @@ def check_copied_comments(
     but the comment describes a different instruction. Flags inline
     comments whose text matches the parent's comment at the *same*
     address while the instruction (or item type) there differs.
+    Skipped when the comment fits both instructions: they differ only
+    in register (``DEX``/``DEY``), or the child instruction is a
+    store described as "Write …"/"Store …".
 
     MEDIUM confidence: either side may be the wrong one.
     """
@@ -893,6 +962,8 @@ def check_copied_comments(
         if (item.get("type"), item.get("mnemonic")) == (
             parent_item.get("type"), parent_item.get("mnemonic")
         ):
+            continue
+        if _comment_fits_both(item, parent_item, comment):
             continue
         message = (
             f"Comment {comment!r} is identical to {parent.version_id}'s at "
