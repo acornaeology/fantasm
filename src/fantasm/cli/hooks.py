@@ -16,10 +16,12 @@ from ..api.hooks import (
     render_hook_subroutine_line,
 )
 from ..cli_helpers import analysis_context, project_cpu
+from ._target import FantasmGroup, target_argument
 
 
 @click.group(
     "hooks",
+    cls=FantasmGroup,
     help=(
         "hook_subroutine() discovery and review. The "
         "hook_subroutine() name is shared between dasmos and "
@@ -42,11 +44,11 @@ def hooks_group() -> None:
         "hook_subroutine() form."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--cpu",
     default=None,
-    help='CPU override; defaults to [rom] cpu in fantasm.toml (or "6502").',
+    help='CPU override; defaults to [binary] cpu in fantasm.toml (or "6502").',
 )
 @click.option(
     "--min-call-sites",

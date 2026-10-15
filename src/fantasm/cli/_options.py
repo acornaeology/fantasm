@@ -19,7 +19,7 @@ import click
 cpu_option = click.option(
     "--cpu",
     default=None,
-    help='CPU override; defaults to [binary]/[rom] cpu (or "6502").',
+    help='CPU override; defaults to [binary] cpu (or "6502").',
 )
 
 rom_base_option = click.option(
@@ -28,7 +28,7 @@ rom_base_option = click.option(
     "rom_base",
     type=click.IntRange(0, 0xFFFF),
     default=None,
-    help="Load address; defaults to [binary] base_address (or [rom], or 0x8000).",
+    help="Load address; defaults to the target's load address ([binary] base_address, or 0x8000, unless configured per target).",
 )
 
 

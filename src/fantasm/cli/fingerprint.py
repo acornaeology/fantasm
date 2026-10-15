@@ -6,18 +6,20 @@ import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.fingerprint import find_duplicate_blocks, fingerprint_blocks
-from ..cli_helpers import analysis_context, project_cpu, project_binary_base
+from ..cli_helpers import analysis_context, project_cpu, target_load_address
 from ._options import cpu_option, rom_base_option
+from ._target import TargetCommand, target_argument
 
 
 @click.command(
     "fingerprint",
+    cls=TargetCommand,
     help=(
-        "Fingerprint each block of a ROM version's bytes and report any "
+        "Fingerprint each block of a target's binary and report any "
         "duplicate blocks (a quick cross-check for relocated code)."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--block-size",
     type=click.IntRange(1, 4096),
@@ -38,7 +40,7 @@ def fingerprint_cmd(
     if cpu is None:
         cpu = project_cpu(actx.project)
     if rom_base is None:
-        rom_base = project_binary_base(actx.project)
+        rom_base = target_load_address(actx.project, actx.files)
     if not actx.files.binary_filepath.exists():
         raise click.UsageError(f"binary not found: {actx.files.binary_filepath}")
 

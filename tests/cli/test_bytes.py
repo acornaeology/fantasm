@@ -147,4 +147,4 @@ def test_bytes_find_help_lists_cross_option() -> None:
     result = runner.invoke(main, ["bytes", "find", "--help"])
     assert result.exit_code == 0
     assert "--cross" in result.output
-    assert "VERSION_ID" in result.output
+    assert "--cross TARGET" in result.output

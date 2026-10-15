@@ -162,15 +162,41 @@ from .rename_labels import (
     parse_label_declarations,
     update_ref_strings,
 )
+from .inf import (
+    InfParseError,
+    InfRecord,
+    inf_address,
+    parse_inf,
+    read_inf,
+    sidecar_inf_filepath,
+)
 from .project import (
     ProjectInitConfig,
+    TargetSpec,
     VersionInfo,
     add_version,
+    append_target,
     init_project,
     list_versions,
     render_fantasm_toml,
 )
-from .verify import BeebasmNotFoundError, VerifyResult, verify_round_trip
+from .targets import (
+    TargetConfigError,
+    TargetFiles,
+    TargetNotFoundError,
+    default_target_id,
+    list_target_ids,
+    resolve_target,
+)
+from .verify import (
+    AssemblerConfig,
+    AssemblerConfigError,
+    AssemblerNotFoundError,
+    AssemblerOutputMissingError,
+    BeebasmNotFoundError,
+    VerifyResult,
+    verify_round_trip,
+)
 from .version_graph import (
     Edge,
     NoPathError,
@@ -269,6 +295,24 @@ from .paths import (
 )
 
 __all__ = [
+    "InfParseError",
+    "InfRecord",
+    "inf_address",
+    "parse_inf",
+    "read_inf",
+    "sidecar_inf_filepath",
+    "TargetSpec",
+    "append_target",
+    "TargetConfigError",
+    "TargetFiles",
+    "TargetNotFoundError",
+    "default_target_id",
+    "list_target_ids",
+    "resolve_target",
+    "AssemblerConfig",
+    "AssemblerConfigError",
+    "AssemblerNotFoundError",
+    "AssemblerOutputMissingError",
     "ALL_FLAGS",
     "AUTO_LABEL_RE",
     "AsmSection",

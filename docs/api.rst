@@ -34,6 +34,18 @@ Project paths and version directory layout
 .. automodule:: fantasm.config
 
 
+Targets: resolving a target's files
+-----------------------------------
+
+.. automodule:: fantasm.api.targets
+
+
+Acorn ``.inf`` sidecar files
+----------------------------
+
+.. automodule:: fantasm.api.inf
+
+
 Round-trip verification
 -----------------------
 

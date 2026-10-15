@@ -1,4 +1,4 @@
-"""``fantasm compare`` — diff two ROM versions."""
+"""``fantasm compare`` — diff two versions' binaries."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ import click
 from ..api.compare import compare_roms
 from ..cli_helpers import (
     project_cpu,
-    project_binary_base,
     require_project,
     resolve_version_files,
+    target_load_address,
 )
 from ._options import cpu_option, rom_base_option
 
 
 @click.command(
     help=(
-        "Compare two ROM versions at byte / opcode / full-instruction "
+        "Compare two versions' binaries at byte / opcode / full-instruction "
         "granularity and print a diff report."
     ),
 )
@@ -35,10 +35,10 @@ def compare(
     project_context = require_project(ctx)
     if cpu is None:
         cpu = project_cpu(project_context)
-    if rom_base is None:
-        rom_base = project_binary_base(project_context)
     files_a = resolve_version_files(project_context, version_a)
     files_b = resolve_version_files(project_context, version_b)
+    if rom_base is None:
+        rom_base = target_load_address(project_context, files_a)
 
     if not files_a.binary_filepath.exists():
         raise click.UsageError(

@@ -13,9 +13,11 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 
 from .. import __version__
 from ..config import ProjectContext, resolve_project_context
+from ._target import FantasmGroup
 
 
 @click.group(
+    cls=FantasmGroup,
     help="Fantasm — the Fantastic (dis-/re-)Assembly tools for 6502 code.",
     context_settings={"help_option_names": ["-h", "--help"]},
 )

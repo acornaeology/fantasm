@@ -7,9 +7,10 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.context import analyse_uncommented_subs
 from ..cli_helpers import analysis_context
+from ._target import FantasmGroup, target_argument
 
 
-@click.group(help="Code context queries (depth, sub-context, uncommented gaps).")
+@click.group(cls=FantasmGroup, help="Code context queries (depth, sub-context, uncommented gaps).")
 def context() -> None:
     pass
 
@@ -23,7 +24,7 @@ def context() -> None:
         "relationships with already-understood code."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--threshold-pct",
     type=click.FloatRange(0, 100),

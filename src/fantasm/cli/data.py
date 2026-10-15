@@ -27,6 +27,7 @@ from ..api.data_review import (
     find_data_runs,
 )
 from ..cli_helpers import analysis_context, project_cpu
+from ._target import FantasmGroup, target_argument
 
 
 _TYPE_CHOICES = ("byte", "word", "string")
@@ -34,6 +35,7 @@ _TYPE_CHOICES = ("byte", "word", "string")
 
 @click.group(
     "data",
+    cls=FantasmGroup,
     help="Data-declaration review (runs, heuristic reclassification).",
 )
 def data_group() -> None:
@@ -49,7 +51,7 @@ def data_group() -> None:
         "--min-bytes adjusts."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--min-bytes",
     type=click.IntRange(1, 0x10000),
@@ -133,11 +135,11 @@ def data_runs(
         "more specific."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--cpu",
     default=None,
-    help='CPU override; defaults to [rom] cpu in fantasm.toml (or "6502").',
+    help='CPU override; defaults to [binary] cpu in fantasm.toml (or "6502").',
 )
 @click.option(
     "--target-type",

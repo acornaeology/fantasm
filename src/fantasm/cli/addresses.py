@@ -1,4 +1,4 @@
-"""``fantasm addresses`` — address translation across ROM versions."""
+"""``fantasm addresses`` — address translation across versions."""
 
 from __future__ import annotations
 
@@ -8,14 +8,15 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 from ..api.blockmatch import build_full_address_map
 from ..cli_helpers import (
     project_cpu,
-    project_binary_base,
     require_project,
     resolve_version_files,
+    target_load_address,
 )
 from ._options import cpu_option, rom_base_option
+from ._target import FantasmGroup
 
 
-@click.group(help="Address translation across ROM versions.")
+@click.group(cls=FantasmGroup, help="Address translation across versions.")
 def addresses() -> None:
     pass
 
@@ -25,7 +26,7 @@ def addresses() -> None:
     help=(
         "Map addresses from SOURCE_VERSION to TARGET_VERSION via "
         "opcode-level matching. With no --addr arguments, emits the "
-        "full mapping (large for real ROMs — pipe through --as tsv). "
+        "full mapping (large for real binaries — pipe through --as tsv). "
         "With --addr, only the specified source addresses are mapped."
     ),
 )
@@ -46,7 +47,7 @@ def addresses() -> None:
         "Minimum anchored shared-block length (in opcodes) for a "
         "mapping to be emitted. Defaults to 5 to match "
         "``fantasm backfill``; lower deliberately when working with "
-        "tiny ROMs or fixtures."
+        "tiny binaries or fixtures."
     ),
 )
 @cpu_option
@@ -75,11 +76,10 @@ def addresses_map(
     project_context = require_project(ctx)
     if cpu is None:
         cpu = project_cpu(project_context)
-    if rom_base is None:
-        rom_base = project_binary_base(project_context)
-
     files_source = resolve_version_files(project_context, source_version)
     files_target = resolve_version_files(project_context, target_version)
+    if rom_base is None:
+        rom_base = target_load_address(project_context, files_source)
     if not files_source.binary_filepath.exists():
         raise click.UsageError(f"binary not found: {files_source.binary_filepath}")
     if not files_target.binary_filepath.exists():

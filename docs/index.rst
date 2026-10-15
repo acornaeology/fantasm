@@ -40,6 +40,9 @@ Where to start
   in a disassembly driver script, running the first ``disassemble`` /
   ``verify`` / ``lint`` cycle.
 
+* **Disassembling a disc-loaded program, or adopting a project with
+  its own layout?** See :doc:`disc_programs`.
+
 * **Setting up a new project's** ``fantasm.toml`` **?** See
   :doc:`configuration` for the full schema, then :doc:`version_graph`
   for the multi-version pieces (``[[versions.entry]]``, ``parents``,
@@ -64,6 +67,7 @@ Where to start
    :caption: Tutorial
 
    getting_started
+   disc_programs
    configuration
    version_graph
    workflows

@@ -13,9 +13,10 @@ from ..api.audit import (
     find_undeclared_subs,
 )
 from ..cli_helpers import analysis_context
+from ._target import FantasmGroup, target_argument
 
 
-@click.group(help="Subroutine annotation audit.")
+@click.group(cls=FantasmGroup, help="Subroutine annotation audit.")
 def audit() -> None:
     pass
 
@@ -24,7 +25,7 @@ def audit() -> None:
     "summary",
     help="List every subroutine with its computed flags.",
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--flag",
     type=click.Choice(ALL_FLAGS, case_sensitive=False),
@@ -88,7 +89,7 @@ def audit_summary(version_id: str, flag: str | None) -> Reports:
         "on argument / I/O errors — use the row count for CI gating."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @report_output(reports={"placeholders": "Placeholder labels"})
 def audit_placeholders(version_id: str) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
@@ -137,7 +138,7 @@ def _build_placeholders_table(actx, version_id: str) -> TableContent:
     "detail",
     help="Show the full audit report for one subroutine.",
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument("target")
 @report_output(reports={
     "info": "Subroutine summary",
@@ -233,7 +234,7 @@ def audit_detail(version_id: str, target: str) -> Reports:
     "undeclared",
     help="List JSR targets that lack subroutine() declarations.",
 )
-@click.argument("version_id")
+@target_argument()
 @report_output(reports={"undeclared": "Undeclared JSR targets"})
 def audit_undeclared(version_id: str) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)

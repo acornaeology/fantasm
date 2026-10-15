@@ -24,9 +24,10 @@ from ..cli_helpers import (
     resolve_version_files,
 )
 from ._options import cpu_option, rom_base_option
+from ._target import FantasmGroup
 
 
-@click.group(help="Cross-version annotation diff and management.")
+@click.group(cls=FantasmGroup, help="Cross-version annotation diff and management.")
 def annotations() -> None:
     pass
 

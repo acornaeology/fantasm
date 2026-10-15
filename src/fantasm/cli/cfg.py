@@ -21,15 +21,16 @@ from ..api.dot import (
     render_dot,
 )
 from ..cli_helpers import analysis_context
+from ._target import FantasmGroup, target_argument
 
 
-@click.group(help="Inter-procedural call-graph queries.")
+@click.group(cls=FantasmGroup, help="Inter-procedural call-graph queries.")
 def cfg() -> None:
     pass
 
 
 @cfg.command("leaves", help="List leaf subroutines (no internal callees).")
-@click.argument("version_id")
+@target_argument()
 @report_output(reports={"leaves": "Leaf subroutines"})
 def cfg_leaves(version_id: str) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
@@ -59,7 +60,7 @@ def cfg_leaves(version_id: str) -> Reports:
 
 
 @cfg.command("roots", help="List root subroutines (in-degree 0, internal).")
-@click.argument("version_id")
+@target_argument()
 @report_output(reports={"roots": "Root subroutines"})
 def cfg_roots(version_id: str) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
@@ -87,7 +88,7 @@ def cfg_roots(version_id: str) -> Reports:
 
 
 @cfg.command("depth", help="List subroutines by call-graph depth (leaves first).")
-@click.argument("version_id")
+@target_argument()
 @report_output(reports={"depth": "Subroutine depth"})
 def cfg_depth(version_id: str) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
@@ -119,7 +120,7 @@ def cfg_depth(version_id: str) -> Reports:
 
 
 @cfg.command("sub", help="Show callers and callees of one subroutine.")
-@click.argument("version_id")
+@target_argument()
 @click.argument("target")
 @report_output(reports={
     "callers": "Callers of the subroutine",
@@ -176,14 +177,14 @@ def cfg_sub(version_id: str, target: str) -> Reports:
 @cfg.command(
     "blocks",
     help=(
-        "Identify basic blocks within a version's disassembly. "
+        "Identify basic blocks within a target's disassembly. "
         "Without --sub, surveys every subroutine. With --sub, shows "
         "only the named subroutine's blocks. --uncommented-only "
         "filters to blocks with zero inline comments and at least "
         "two items, the typical annotation-gap-finding workflow."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--sub",
     "sub_target",
@@ -273,7 +274,7 @@ def cfg_blocks(
         "graph view."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument("target")
 @click.option(
     "--body-window",
@@ -439,11 +440,11 @@ def _write_graph_output(
         "Emit the inter-procedural call graph as graphviz dot (or "
         "GraphML). Pipe into ``dot -Tpng`` / ``dot -Tsvg`` for an "
         "image, or use --render to do that in one step. Filters let "
-        "you focus on a neighbourhood; the whole graph for a real ROM "
+        "you focus on a neighbourhood; the whole graph for a real program "
         "is usually too dense to read."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "-f",
     "--format",
@@ -495,7 +496,7 @@ def _write_graph_output(
 @click.option(
     "--exclude-external",
     is_flag=True,
-    help="Drop OS / external-entry nodes (those above the ROM range).",
+    help="Drop OS / external-entry nodes (those above the binary's range).",
 )
 @click.option(
     "--include-pattern",
@@ -571,7 +572,7 @@ def cfg_dot_call_graph(
         "in one step."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument("target")
 @click.option(
     "-f",

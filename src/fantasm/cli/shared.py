@@ -1,4 +1,4 @@
-"""``fantasm shared`` — find shared 6502 code fragments across ROMs."""
+"""``fantasm shared`` — find shared 6502 code fragments across binaries."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from ..api.find_shared import (
 @click.command(
     "shared",
     help=(
-        "Find shared 6502 code fragments between a primary ROM and "
-        "one or more reference ROMs. Specs use the form "
+        "Find shared 6502 code fragments between a primary binary and "
+        "one or more reference binaries. Specs use the form "
         "[label=]path@load-addr (e.g. nfs=path/to/nfs.rom@&8000)."
     ),
 )

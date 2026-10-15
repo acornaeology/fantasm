@@ -54,7 +54,7 @@ class TestRenderFantasmToml:
         rendered = render_fantasm_toml(cfg)
         parsed = tomllib.loads(rendered)
         assert parsed["project"]["name"] == "acorn-nfs"
-        assert parsed["rom"]["cpu"] == "65c02"
+        assert parsed["binary"]["cpu"] == "65c02"
         assert parsed["versions"]["prefixes"] == ["anfs", "nfs"]
 
     def test_omits_directory_when_default(self) -> None:

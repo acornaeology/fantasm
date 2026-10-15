@@ -14,6 +14,7 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.context import compute_coverage
 from ..cli_helpers import analysis_context
+from ._target import TargetCommand, target_argument
 
 
 _BY_CHOICES = ("page", "sub")
@@ -21,6 +22,7 @@ _BY_CHOICES = ("page", "sub")
 
 @click.command(
     "coverage",
+    cls=TargetCommand,
     help=(
         "Report the disassembly's inline-comment coverage as a single "
         "headline percentage (commented code items / total code items) "
@@ -28,13 +30,13 @@ _BY_CHOICES = ("page", "sub")
         "breakdown or --by sub for a per-subroutine breakdown."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--by",
     "group_by",
     type=click.Choice(_BY_CHOICES, case_sensitive=False),
     default=None,
-    help="Group the breakdown by ROM page (256 bytes) or by subroutine.",
+    help="Group the breakdown by memory page (256 bytes) or by subroutine.",
 )
 @report_output(reports={
     "summary": "Headline coverage and supporting counts",

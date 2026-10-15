@@ -8,9 +8,10 @@ import click
 from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.insert_point import AlreadyDeclared, compute_insert_point
+from ._target import FantasmGroup
 
 
-@click.group(help="Subroutine workflow helpers.")
+@click.group(cls=FantasmGroup, help="Subroutine workflow helpers.")
 def sub() -> None:
     pass
 

@@ -14,27 +14,22 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from functools import cached_property
-from pathlib import Path
 from typing import Any, Callable
 
 import click
 
 from .api.audit import build_memory_regions, load_subroutines
+from .api.inf import InfParseError
 from .api.paths import (
     VersionNotFoundError,
     project_binary_base,
-    project_binary_dirname,
-    project_binary_extension,
-    project_binary_filename_template,
-    project_binary_metadata_filename,
     project_cpu,
-    project_driver_dirname,
-    project_driver_filename_template,
-    project_rom_prefixes,
-    project_versions_dirpath,
-    render_binary_filename,
-    render_driver_filename,
-    resolve_version_dirpath,
+)
+from .api.targets import (
+    TargetConfigError,
+    TargetFiles,
+    TargetNotFoundError,
+    resolve_target,
 )
 from .api.version_graph import (
     VersionGraphError,
@@ -44,29 +39,9 @@ from .api.version_graph import (
 from .config import ProjectContext
 
 
-@dataclass(frozen=True)
-class VersionFiles:
-    """Conventional file paths inside a version directory.
-
-    ``versions/{prefix}-{version_id}/`` is the version directory. The
-    program binary and its metadata live under a configurable
-    subdirectory (``[binary] dir``/``extension``/``metadata``,
-    defaulting to the ROM convention ``rom/{prefix}-{version_id}.rom``
-    and ``rom/rom.json``); disassembly artefacts live under
-    ``output/{prefix}-{version_id}.{asm,json}``. The driver script's
-    path is derived from ``[versions] driver_dirname`` and
-    ``[versions] driver_filename`` (defaults: ``disassemble/`` and
-    ``disasm_{prefix}_{version_id_no_dots}.py``).
-    """
-
-    version_id: str
-    prefix: str
-    version_dirpath: Path
-    binary_filepath: Path
-    metadata_filepath: Path
-    asm_filepath: Path
-    json_filepath: Path
-    driver_filepath: Path
+# Kept under its historical name: every per-version command works on
+# a target, and a version is just a target in the version graph.
+VersionFiles = TargetFiles
 
 
 def require_project(ctx: click.Context) -> ProjectContext:
@@ -82,29 +57,20 @@ def require_project(ctx: click.Context) -> ProjectContext:
 
 def resolve_version_files(
     project_context: ProjectContext, version_id: str
-) -> VersionFiles:
-    """Resolve the conventional files for a given ``version_id``.
+) -> TargetFiles:
+    """Resolve the files for a given target (``version_id``).
 
-    Walks the project's configured prefixes and returns paths for the
-    ROM bytes, the assembled output, and the JSON manifest. Files are
-    not required to exist; commands check what they need.
+    Delegates to :func:`fantasm.api.targets.resolve_target`, which
+    applies the ``versions/`` convention, ``[layout]`` templates and
+    ``[[targets]]`` entries in turn. Files are not required to exist;
+    commands check what they need.
 
-    Raises ``click.UsageError`` if the version directory is missing
-    (with the available versions listed) or if the project's prefixes
-    are unconfigured.
+    Raises ``click.UsageError`` if the target is unknown (with the
+    available targets listed), if its configuration is invalid, or if
+    its ``.inf`` sidecar can't be parsed.
     """
-    versions_dirpath = project_versions_dirpath(project_context)
-    prefixes = project_rom_prefixes(project_context)
-    if not prefixes:
-        raise click.UsageError(
-            "no [versions] prefixes configured in fantasm.toml "
-            "(and no [project] name to fall back on)"
-        )
-
     try:
-        version_dirpath = resolve_version_dirpath(
-            versions_dirpath, version_id, prefixes
-        )
+        return resolve_target(project_context, version_id)
     except VersionNotFoundError as exc:
         suffix = (
             f"\nAvailable: {', '.join(exc.available)}"
@@ -115,43 +81,17 @@ def resolve_version_files(
             f"version {version_id!r} not found under "
             f"{exc.versions_dirpath}{suffix}"
         ) from exc
+    except (TargetNotFoundError, TargetConfigError, InfParseError) as exc:
+        raise click.UsageError(str(exc)) from exc
 
-    # Determine which configured prefix matched.
-    name = version_dirpath.name
-    matched_prefix = next(
-        (p for p in prefixes if name == p or name.startswith(f"{p}-")),
-        prefixes[0],
-    )
 
-    base = f"{matched_prefix}-{version_id}"
-    driver_dirname = project_driver_dirname(project_context)
-    driver_filename = render_driver_filename(
-        project_driver_filename_template(project_context),
-        matched_prefix,
-        version_id,
-    )
-    binary_dirname = project_binary_dirname(project_context)
-    extension = project_binary_extension(project_context)
-    binary_suffix = f".{extension}" if extension else ""
-    binary_dirpath = version_dirpath / binary_dirname
-    binary_basename = render_binary_filename(
-        project_binary_filename_template(project_context),
-        matched_prefix,
-        version_id,
-    )
-    return VersionFiles(
-        version_id=version_id,
-        prefix=matched_prefix,
-        version_dirpath=version_dirpath,
-        binary_filepath=binary_dirpath / f"{binary_basename}{binary_suffix}",
-        metadata_filepath=(
-            binary_dirpath
-            / project_binary_metadata_filename(project_context)
-        ),
-        asm_filepath=version_dirpath / "output" / f"{base}.asm",
-        json_filepath=version_dirpath / "output" / f"{base}.json",
-        driver_filepath=version_dirpath / driver_dirname / driver_filename,
-    )
+def target_load_address(
+    project_context: ProjectContext, files: TargetFiles
+) -> int:
+    """The target's load address, falling back to ``[binary] base_address``."""
+    if files.load_address is not None:
+        return files.load_address
+    return project_binary_base(project_context)
 
 
 def effective_regions_for(
@@ -310,4 +250,5 @@ __all__ = [
     "project_cpu",
     "require_project",
     "resolve_version_files",
+    "target_load_address",
 ]

@@ -18,13 +18,43 @@ from ..api.lint import (
     valid_label_names_from_data,
 )
 from ..cli_helpers import analysis_context
+from ._target import TargetCommand, target_argument
+
+
+def _metadata_doc_paths(metadata_filepath: Path | None) -> list[str]:
+    """The ``docs`` paths listed in the target's metadata file.
+
+    The metadata file is optional: a target without one (or whose
+    configured file doesn't exist) simply has no docs to check.
+    Malformed JSON, or a ``docs`` list of the wrong shape, is reported
+    as a usage error rather than a traceback.
+    """
+    if metadata_filepath is None or not metadata_filepath.is_file():
+        return []
+    try:
+        metadata = json.loads(metadata_filepath.read_text())
+    except json.JSONDecodeError as exc:
+        raise click.UsageError(
+            f"metadata file {metadata_filepath} is not valid JSON "
+            f"(line {exc.lineno}): {exc.msg}"
+        ) from exc
+    docs = metadata.get("docs", []) if isinstance(metadata, dict) else None
+    if not isinstance(docs, list) or not all(
+        isinstance(doc, dict) and isinstance(doc.get("path"), str)
+        for doc in docs
+    ):
+        raise click.UsageError(
+            f"metadata file {metadata_filepath}: \"docs\" must be a list "
+            'of objects each with a string "path"'
+        )
+    return [doc["path"] for doc in docs]
 
 
 def _collect_broken_scheme_links(actx, driver_filepath):
     """Find inline ``label:`` / ``glossary:`` links in the driver and the
-    version's doc Markdown whose target doesn't resolve.
+    target's doc Markdown whose link target doesn't resolve.
 
-    ``label:NAME`` is checked against the version's label set; a
+    ``label:NAME`` is checked against the target's label set; a
     ``glossary:SLUG`` is checked against ``GLOSSARY.md`` at the project
     root (skipped if that file can't be located, since the glossary is
     a project-level, not per-version, artifact).
@@ -40,13 +70,10 @@ def _collect_broken_scheme_links(actx, driver_filepath):
                 glossary_filepath.read_text())
 
     sources = [(driver_filepath.name, driver_filepath.read_text())]
-    metadata_filepath = actx.files.metadata_filepath
-    if metadata_filepath.is_file():
-        metadata = json.loads(metadata_filepath.read_text())
-        for doc in metadata.get("docs", []):
-            doc_filepath = actx.files.version_dirpath / doc["path"]
-            if doc_filepath.is_file():
-                sources.append((doc["path"], doc_filepath.read_text()))
+    for doc_path in _metadata_doc_paths(actx.files.metadata_filepath):
+        doc_filepath = actx.files.version_dirpath / doc_path
+        if doc_filepath.is_file():
+            sources.append((doc_path, doc_filepath.read_text()))
 
     broken = []
     for source_label, text in sources:
@@ -64,26 +91,35 @@ def _collect_broken_scheme_links(actx, driver_filepath):
 
 @click.command(
     "lint",
+    cls=TargetCommand,
     help=(
         "Validate that a driver script's annotation addresses "
         "(comment / subroutine / label) all map to addresses present "
-        "in the version's disassembly output, the version's declared "
-        "workspace regions, or its external_labels."
+        "in the target's disassembly output, its declared workspace "
+        "regions, or its external_labels. DRIVER_FILEPATH defaults to "
+        "the target's own driver script."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument(
     "driver_filepath",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=False,
 )
 @report_output(reports={
     "unmapped": "Annotations whose addresses are not in the disassembly",
     "broken_links": "Inline label:/glossary: links whose target doesn't resolve",
 })
 def lint_annotations(
-    version_id: str, driver_filepath: Path
+    version_id: str, driver_filepath: Path | None
 ) -> Reports:
     actx = analysis_context(click.get_current_context(), version_id)
+    if driver_filepath is None:
+        driver_filepath = actx.files.driver_filepath
+        if not driver_filepath.is_file():
+            raise click.UsageError(
+                f"driver script not found: {driver_filepath}"
+            )
     # Per-address valid set: items, sub_labels, external_labels,
     # subroutines, and the full ROM range. The set covers anything
     # the disassembler emitted into the JSON (dasmos and py8dis

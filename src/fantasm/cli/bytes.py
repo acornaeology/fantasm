@@ -1,4 +1,4 @@
-"""``fantasm bytes`` — byte-signature search across ROM images.
+"""``fantasm bytes`` — byte-signature search across binaries.
 
 A ``bytes`` group rather than a flat command — leaves room for
 future ``bytes count``, ``bytes histogram`` and similar without
@@ -18,15 +18,17 @@ from ..api.bytes_search import (
 )
 from ..cli_helpers import (
     analysis_context,
-    project_binary_base,
     require_project,
     resolve_version_files,
+    target_load_address,
 )
+from ._target import FantasmGroup, target_argument
 
 
 @click.group(
     "bytes",
-    help="Byte-signature search across ROM images.",
+    cls=FantasmGroup,
+    help="Byte-signature search across binaries.",
 )
 def bytes_group() -> None:
     pass
@@ -35,7 +37,7 @@ def bytes_group() -> None:
 @bytes_group.command(
     "find",
     help=(
-        "Find every occurrence of HEX_SEQUENCE in VERSION_ID's ROM. "
+        "Find every occurrence of HEX_SEQUENCE in the TARGET's binary. "
         "The pattern is hex bytes optionally separated by spaces or "
         "$/0x prefixes; '??' matches any single byte. With --cross "
         "VID, the same search runs against the named version too "
@@ -43,7 +45,7 @@ def bytes_group() -> None:
         "been removed in another release."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument("hex_sequence")
 @click.option(
     "--base-address",
@@ -60,9 +62,9 @@ def bytes_group() -> None:
     "--cross",
     "cross_versions",
     multiple=True,
-    metavar="VERSION_ID",
+    metavar="TARGET",
     help=(
-        "Also search this version's ROM for the same pattern. "
+        "Also search this target's binary for the same pattern. "
         "Repeatable: '--cross 4.18 --cross 4.21' searches both."
     ),
 )
@@ -84,7 +86,9 @@ def bytes_find(
     ctx = click.get_current_context()
     project_context = require_project(ctx)
     if rom_base is None:
-        rom_base = project_binary_base(project_context)
+        rom_base = target_load_address(
+            project_context, resolve_version_files(project_context, version_id)
+        )
 
     has_wildcards = bool(pattern.wildcards)
     show_cross = bool(cross_versions)

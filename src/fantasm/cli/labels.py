@@ -39,6 +39,7 @@ from ._options import (
     label_sort_option,
     label_source_option,
 )
+from ._target import FantasmGroup, target_argument
 
 
 _LABEL_SORT_KEYS: dict[str, callable] = {
@@ -51,7 +52,7 @@ _LABEL_SORT_KEYS: dict[str, callable] = {
 }
 
 
-@click.group(help="Auto-generated label classification and renaming.")
+@click.group(cls=FantasmGroup, help="Auto-generated label classification and renaming.")
 def labels() -> None:
     pass
 
@@ -64,7 +65,7 @@ def labels() -> None:
         "internal_loop, internal_conditional."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--category",
     type=click.Choice(
@@ -256,7 +257,7 @@ def labels_apply(
 @labels.command(
     "list",
     help=(
-        "Inventory every label declared in a version's disassembly. "
+        "Inventory every label declared in a target's disassembly. "
         "By default shows name, address, source (driver vs env), "
         "length, inbound reference count, and — from dasmos >= 2.0 "
         "schema-v2 JSON — the direct vs indexing-base split of those "
@@ -274,7 +275,7 @@ def labels_apply(
         "excluded from conversion."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @label_sort_option
 @label_reverse_option
 @label_min_length_option
@@ -367,7 +368,7 @@ def labels_list(
         "if the label is not declared in the version."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument("label_name")
 @report_output(reports={"refs": "Label reference sites"})
 def labels_refs(version_id: str, label_name: str) -> Reports:

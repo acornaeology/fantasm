@@ -14,16 +14,16 @@ I want to verify my disassembly is byte-correct
 
 After every change to the disassembly driver, the load-bearing
 question is: does the regenerated ``.asm`` reassemble back to the
-original ROM bytes?
+original binary?
 
 .. code-block:: bash
 
    uv run fantasm disassemble 1.0      # rerun the disassembly driver
-   uv run fantasm verify 1.0           # beebasm round-trip + byte compare
+   uv run fantasm verify 1.0           # assembler round-trip + byte compare
 
 * **Pass** → "Verification PASSED: N bytes match". The disassembly
   is faithful.
-* **Fail** → "Verification FAILED: rom=Nb assembled=Mb
+* **Fail** → "Verification FAILED: binary=Nb assembled=Mb
   first_diff=&XXXX". Look at the first differing offset; it's almost
   always either a typo'd ``constant()`` / ``label()``, an instruction
   that the disassembler decoded differently from what's in the bytes
@@ -38,8 +38,13 @@ project-side wrapper.
 
 Useful options:
 
-* ``fantasm verify --all`` runs verify across every version under
-  the project's ``versions/`` directory, useful as a CI safety net.
+* ``fantasm verify --all`` runs verify across every target in the
+  project, useful as a CI safety net.
+
+The assembler is beebasm by default. A project using a different
+assembler, or a wrapper script, configures the command, its working
+directory and the file to compare in ``fantasm.toml``'s ``[verify]``
+section — see :doc:`configuration`.
 
 See :doc:`cli` for the full reference, ``fantasm verify`` section.
 

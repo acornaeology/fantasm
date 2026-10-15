@@ -7,16 +7,18 @@ from asyoulikeit import Report, Reports, TableContent, report_output
 
 from ..api.promote import analyze_labels
 from ..cli_helpers import analysis_context
+from ._target import TargetCommand, target_argument
 
 
 @click.command(
     "promote",
+    cls=TargetCommand,
     help=(
         "Score labelled code items as candidates for promotion to "
         "entry()/subroutine() declarations."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--threshold",
     type=click.IntRange(0, 100),

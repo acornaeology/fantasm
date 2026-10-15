@@ -1,7 +1,10 @@
 Getting started
 ===============
 
-This page walks through bringing a brand-new project under fantasm.
+This page walks through bringing a brand-new ROM project under
+fantasm. To adopt an existing project as it stands — or to
+disassemble a disc-loaded program rather than a ROM — see
+:doc:`disc_programs`.
 By the end you will have a working ``fantasm.toml``, a single ROM
 version registered, a disassembly driver script that produces
 ``.asm`` and ``.json`` artefacts, and a CI-ready
@@ -103,7 +106,7 @@ e.g. ``versions/myrom-1.0/``. Multi-prefix projects (NFS uses two:
    uv run fantasm project init --name acorn-nfs --prefix anfs --prefix nfs
 
 The generated ``fantasm.toml`` covers the bare minimum. Edit it to
-add ``[rom] base_address``, ``[memory]`` regions, and per-version
+add ``[binary] base_address``, ``[memory]`` regions, and per-version
 ``[[versions.entry]]`` entries — see :doc:`configuration`.
 
 
@@ -204,11 +207,15 @@ With the driver in place:
    # 2. Validate every comment / label / subroutine address in the
    #    driver matches an address fantasm knows about. Zero output
    #    means every annotation lined up.
-   uv run fantasm lint 1.0 versions/myrom-1.0/disassemble/disasm_myrom_10.py
+   uv run fantasm lint 1.0
 
    # 3. Reassemble the .asm with beebasm and byte-compare to the
    #    original ROM. The single load-bearing correctness check.
    uv run fantasm verify 1.0
+
+While the project has a single version, the ``1.0`` can be left out
+of every command (``uv run fantasm verify``); once there are several,
+name one or set ``[project] default_target``.
 
 That's the loop. ``fantasm verify`` failing means the disassembly is
 not faithful — usually because a label, an instruction, or a data
@@ -234,9 +241,7 @@ around the three commands above. The shape:
      run: uv run fantasm disassemble ${{ matrix.version }}
 
    - name: Lint
-     run: |
-       uv run fantasm lint ${{ matrix.version }} \
-         versions/myrom-${{ matrix.version }}/disassemble/disasm_myrom_${{ matrix.version }}.py
+     run: uv run fantasm lint ${{ matrix.version }}
 
    - name: Verify
      run: uv run fantasm verify ${{ matrix.version }}

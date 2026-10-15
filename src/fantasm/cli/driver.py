@@ -14,14 +14,16 @@ from pathlib import Path
 import click
 
 from ..api.driver_sort import is_sorted, sort_driver_text
+from ._target import FantasmGroup
 
 
 @click.group(
     "driver",
+    cls=FantasmGroup,
     help=(
         "Driver-script housekeeping (sorting, formatting). Operates "
         "on the dasmos / py8dis Python driver files that produce a "
-        "version's disassembly output."
+        "target's disassembly output."
     ),
 )
 def driver() -> None:

@@ -29,9 +29,10 @@ from ..cli_helpers import (
     project_cpu,
     resolve_version_files,
 )
+from ._target import FantasmGroup, target_argument
 
 
-@click.group(help="Comment / annotation consistency checks.")
+@click.group(cls=FantasmGroup, help="Comment / annotation consistency checks.")
 def comments() -> None:
     pass
 
@@ -48,16 +49,16 @@ def comments() -> None:
         "driver script."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--start",
     "start_addr",
-    help="Start address (hex, inclusive). Defaults to ROM start.",
+    help="Start address (hex, inclusive). Defaults to the start of the binary.",
 )
 @click.option(
     "--end",
     "end_addr",
-    help="End address (hex, exclusive). Defaults to ROM end.",
+    help="End address (hex, exclusive). Defaults to the end of the binary.",
 )
 @click.option(
     "--label-hint",
@@ -154,7 +155,7 @@ def comments_suggest(
     "check",
     help=(
         "Run the comment-vs-code consistency checks against the "
-        "version's JSON output. When the version's driver script is "
+        "target's JSON output. When the target's driver script is "
         "present, also flags inline comments keyed to an address "
         "inside an instruction or data item. When the version has "
         "parents in the version graph, also flags comments copied "
@@ -162,7 +163,7 @@ def comments_suggest(
         "instruction."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.option(
     "--sub",
     "sub_target",

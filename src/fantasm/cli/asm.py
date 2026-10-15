@@ -6,9 +6,10 @@ import click
 
 from ..api.asm_extract import extract_section
 from ..cli_helpers import analysis_context
+from ._target import FantasmGroup, target_argument
 
 
-@click.group(help="Assembly-source extraction and inspection.")
+@click.group(cls=FantasmGroup, help="Assembly-source extraction and inspection.")
 def asm() -> None:
     pass
 
@@ -16,11 +17,11 @@ def asm() -> None:
 @asm.command(
     "extract",
     help=(
-        "Extract a section of the version's .asm file by address or "
+        "Extract a section of the target's .asm file by address or "
         "label, with line numbers."
     ),
 )
-@click.argument("version_id")
+@target_argument()
 @click.argument("start_target")
 @click.argument("end_target", required=False)
 @click.option(

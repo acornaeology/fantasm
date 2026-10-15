@@ -38,6 +38,9 @@ without confusing fantasm.
    [project]            # name, used in messages and as a fallback
    [binary]             # CPU, base address, and per-version binary layout
    [versions]           # directory layout + version-name prefixes
+   [layout]             # path templates for projects outside versions/
+   [[targets]]          # explicit per-target paths for any existing layout
+   [verify]             # the assembler used by ``fantasm verify``
    [memory]             # workspace + hardware regions used by every version
    [[versions.entry]]   # one block per version, with the version graph
 
@@ -52,10 +55,14 @@ see below.)
 
    [project]
    name = "acorn-myrom"
+   default_target = "1.0"    # optional
 
 * ``name`` *(required)* — used as a fallback for ``[versions]
   prefixes`` when that option is omitted, and for the project-specific
   strings the CLI emits in error and help messages.
+* ``default_target`` — the target per-target commands use when the
+  ``TARGET`` argument is left out. Optional: a project with exactly one
+  target uses that one without being told. See `Targets`_.
 
 
 ``[binary]``
@@ -107,8 +114,9 @@ under the version directory.
 
   Set ``filename = "{version_id_upper}"`` to keep an Acorn DFS-style
   name — id ``keypad`` renders the on-disk binary ``KEYPAD`` — so an
-  extracted DFS program (and its ``KEYPAD.inf`` sidecar, which fantasm
-  simply ignores) stays intact. The ``.asm`` / ``.json`` disassembly
+  extracted DFS program (and its ``KEYPAD.inf`` sidecar, which the
+  versions/ convention ignores — ``base_address`` applies) stays
+  intact. The ``.asm`` / ``.json`` disassembly
   outputs always keep the ``{prefix}-{version_id}`` name; only the
   binary basename follows this template.
 
@@ -119,7 +127,8 @@ historical ``rom/P-V.rom`` + ``rom/rom.json`` layout.
 
 The driver script receives the resolved binary path in the
 ``FANTASM_BINARY`` environment variable (and, for back-compat, the
-same value in ``FANTASM_ROM``).
+same value in ``FANTASM_ROM``); see `The driver's environment`_ for
+the full set.
 
 .. note::
 
@@ -180,6 +189,213 @@ A DFS ``*RUN`` program disassembly, for example:
 For NFS version ``3.10`` (prefix ``anfs``), with the defaults, the
 driver script's path is
 ``versions/anfs-3.10/disassemble/disasm_anfs_310.py``.
+
+
+Targets
+-------
+
+A **target** is one thing being disassembled: a program binary loaded
+at some address, the driver script that disassembles it, the ``.asm``
+and ``.json`` the driver writes, and an optional metadata file. Every
+per-target command — ``disassemble``, ``verify``, ``lint``, ``audit``,
+``cfg``, ``comments`` and the rest — takes a ``TARGET`` argument; in a
+multi-version project each version is a target.
+
+The ``TARGET`` argument is optional when the project has exactly one
+target, or sets ``[project] default_target``::
+
+   fantasm verify              # the only (or default) target
+   fantasm asm extract &1900   # likewise, with a further argument
+   fantasm verify 1.30         # name one explicitly
+
+Leaving it out of a project with several targets and no default fails
+with a message listing them.
+
+Where a target's files live is resolved in three layers. Each overrides
+the one before it **key by key**, so a project can override just the
+driver path for one target and keep the convention for everything
+else:
+
+1. **The versions/ convention** — ``versions/<prefix>-<id>/`` as
+   described under ``[binary]`` and ``[versions]`` above. A project
+   with neither ``[layout]`` nor ``[[targets]]`` uses only this layer,
+   exactly as it always has.
+2. **``[layout]`` templates** — for multi-version projects that keep
+   their files somewhere else.
+3. **``[[targets]]`` entries** — explicit paths for one target each,
+   for adopting an existing project as it stands.
+
+The set of targets is the ``[[targets]]`` ids, then — when
+``[layout]`` is configured — the ``[[versions.entry]]`` ids and any
+ids found by ``[layout] discover``, then the version directories on
+disk. ``fantasm project list`` shows them all, with where each one
+resolved from.
+
+``[[targets]]``
+~~~~~~~~~~~~~~~
+
+One table per target. Paths are relative to the project root:
+
+.. code-block:: toml
+
+   [[targets]]
+   id           = "loader"
+   binary       = "orig/ELITE"
+   load_address = 0x1900          # optional: see below
+   exec_address = 0x8023          # optional
+   driver       = "tools/dis_loader.py"
+   asm          = "build/loader.asm"
+   json         = "build/loader.json"
+   metadata     = "notes/loader.json"   # optional
+   driver_cwd   = "tools"               # optional
+
+* ``id`` *(required)* — the name commands use for the target. Letters,
+  digits, ``.``, ``_`` and ``-``.
+* ``binary``, ``driver``, ``asm``, ``json`` — the files. Any of them
+  may be left out when the target also has a version directory (or
+  ``[layout]`` supplies it); otherwise each is required.
+* ``metadata`` — optional JSON file whose ``docs`` list ``fantasm
+  lint`` checks for broken ``label:`` / ``glossary:`` links. Relative
+  ``docs`` paths resolve against the project root (or the version
+  directory, for a target that has one).
+* ``load_address`` / ``exec_address`` — integers (``0x1900``) or hex
+  strings (``"&1900"``, ``"$1900"``, ``"1900"``). When
+  ``load_address`` is absent, fantasm reads the binary's ``.inf``
+  sidecar (``ELITE.inf`` beside ``ELITE``) if there is one, and
+  otherwise falls back to ``[binary] base_address``.
+* ``inf`` — ``true`` to require the sidecar (an error if it's
+  missing), ``false`` to ignore it, or a path to a ``.inf`` stored
+  elsewhere.
+* ``driver_cwd`` — the directory the driver runs in. By default it
+  runs in the directory ``fantasm`` was invoked from; set this when an
+  existing driver uses paths relative to its own location.
+* ``prefix`` — the ``{prefix}`` used for this target in messages and
+  templates. Defaults to the project's first prefix.
+* ``verify`` — a table overriding ``[verify]`` keys for this target.
+* ``images`` — an alternative to ``binary`` / ``load_address`` /
+  ``exec_address`` / ``inf``, as a list of one table with ``path``,
+  ``name`` and those address keys. Only a single image is supported
+  at present; disassemble a multi-file program as one target per file
+  (see :doc:`disc_programs`).
+
+Unknown keys are rejected, so a typo such as ``binry`` is reported
+rather than silently ignored.
+
+``.inf`` files
+^^^^^^^^^^^^^^
+
+fantasm reads the many ``.inf`` variants archiving tools have written:
+the classic DFS form (``$.ELITE FF1900 FF8023 000400 L``), the
+8-digit ADFS form with an access byte (``FS3 00001900 00001900
+00004C00 33``), quoted names, ``&``/``$``/``0x``-prefixed numbers,
+``Locked`` / ``L`` flags and ADFS access strings (``WR/r``), and
+trailing ``CRC=`` / ``CRC32=`` / ``NEXT=`` extras. High bits of
+``&FF``/``&FFFF`` mark an I/O-processor address and are dropped. A
+``.inf`` that can't be parsed — or whose address isn't a 6502 address,
+such as a RISC OS filetype stamp — is reported with a suggestion to
+give ``load_address`` explicitly.
+
+``[layout]``
+~~~~~~~~~~~~
+
+Path templates rendered for every target, for multi-version projects
+that don't use ``versions/<prefix>-<id>/``:
+
+.. code-block:: toml
+
+   [layout]
+   binary   = "roms/{id}.rom"
+   driver   = "scripts/dis_{id_no_dots}.py"
+   asm      = "build/{id}.asm"
+   json     = "build/{id}.json"
+   metadata = "docs/{id}.json"    # optional
+   discover = "roms/{id}.rom"     # optional: find ids on disk
+
+   [[versions.entry]]
+   id = "1.20"
+
+   [[versions.entry]]
+   id = "1.30"
+   parents = ["1.20"]
+
+Tokens: ``{id}``, ``{id_no_dots}``, ``{id_upper}``, ``{id_lower}``,
+the ``{version_id}`` family (aliases of the ``{id}`` ones),
+``{prefix}``, ``{prefix_upper}`` and ``{prefix_lower}``.
+
+* ``discover`` — a path with exactly one ``{id}`` token. Every
+  matching file or directory adds a target. Without it, the targets
+  are the ``[[versions.entry]]`` ids (plus any ``[[targets]]``).
+* ``load_address``, ``exec_address``, ``inf`` and ``driver_cwd`` may
+  also be given here, applying to every target (``inf`` and
+  ``driver_cwd`` are templates).
+
+
+``[verify]`` — the round-trip assembler
+---------------------------------------
+
+``fantasm verify`` assembles a target's ``.asm`` and compares the
+result with the original binary. The assembler is beebasm unless this
+section says otherwise:
+
+.. code-block:: toml
+
+   [verify]
+   command = ["beebasm", "-i", "{asm}", "-o", "{output}"]   # default
+   cwd     = "{asm_dirpath}"                                # default
+   output  = "{output}"                                     # default
+
+* ``command`` — the argument list, or a single string split with
+  shell-style quoting. A bare program name is looked up on ``PATH``;
+  a relative path with a directory part resolves against the project
+  root, so a wrapper script in the repository works
+  (``command = ["tools/assemble.sh", "{asm}", "{output}"]``).
+* ``cwd`` — the directory the assembler runs in. The default, the
+  listing's own directory, keeps ``INCBIN`` and similar relative
+  directives working.
+* ``output`` — the file to compare against the binary, relative to
+  ``cwd`` unless absolute. The default ``{output}`` is a fresh
+  temporary file fantasm deletes afterwards. An assembler that always
+  writes a fixed file — for example from a ``SAVE "NAME"`` directive —
+  names that file here instead.
+
+Tokens available in all three: ``{asm}`` (absolute path of the
+listing), ``{asm_dirpath}``, ``{asm_filename}``, ``{output}``,
+``{output_dirpath}`` (the temporary directory), ``{binary}`` (absolute
+path of the original binary) and ``{project_root}``.
+
+A ``[[targets]]`` entry's ``verify`` table overrides these keys for
+that target.
+
+
+The driver's environment
+------------------------
+
+``fantasm disassemble`` runs the target's driver with these
+environment variables set:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Variable
+     - Value
+   * - ``FANTASM_TARGET``
+     - the target id
+   * - ``FANTASM_BINARY``
+     - the target's binary (``FANTASM_ROM`` holds the same value, for
+       older drivers)
+   * - ``FANTASM_IMAGES``
+     - JSON list describing the binary image:
+       ``[{"name", "path", "load_addr", "exec_addr"}]``, with
+       ``load_addr`` resolved as described under ``[[targets]]``
+   * - ``FANTASM_ASM`` / ``FANTASM_JSON``
+     - where fantasm expects the generated ``.asm`` / ``.json``
+   * - ``FANTASM_OUTPUT_DIR``
+     - the directory holding the ``.json``
+
+A driver is free to ignore them and use its own paths, as long as its
+outputs land where the configuration says they do — an existing
+driver needs no changes to be adopted.
 
 
 ``[memory]`` — non-ROM addresses where code and labels can live
